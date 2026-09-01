@@ -1,6 +1,9 @@
 name: Build OmniRoute auto-fallback image
 
 on:
+  push:
+    branches:
+      - codex/omniroute-3.8.51-auto-fix-20260901
   workflow_dispatch:
 
 permissions:
