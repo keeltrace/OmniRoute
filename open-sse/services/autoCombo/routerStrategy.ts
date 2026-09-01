@@ -354,8 +354,10 @@ class LKGPStrategyImpl implements RouterStrategy {
           provider: best.provider,
           model: best.model,
           strategy: this.name,
-          reason: `LKGP: using last known good provider ${best.provider}`,
-          candidatesConsidered: 1,
+          // LKGP is an ordering hint only. It may choose the head candidate, but
+          // callers must retain the rest of the scored pool as fallbacks.
+          reason: `LKGP: using last known good provider ${best.provider}; remaining candidates stay eligible`,
+          candidatesConsidered: pool.length,
           finalScore: 1.0,
           connectionId: best.connectionId,
         };

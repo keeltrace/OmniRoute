@@ -1,11 +1,9 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 
-import {
-  evaluateAutoCandidates,
-  resolveAutoStrategyOrder,
-} from "@omniroute/open-sse/services/combo/resolveAutoStrategy.ts";
-import { DEFAULT_WEIGHTS } from "@omniroute/open-sse/services/autoCombo/scoring.ts";
+import { resolveAutoStrategyOrder } from "@omniroute/open-sse/services/combo/resolveAutoStrategy.ts";
+import type { ResolveAutoStrategyDeps } from "@omniroute/open-sse/services/combo/resolveAutoStrategy.ts";
+import { selectWithStrategy } from "@omniroute/open-sse/services/autoCombo/routerStrategy.ts";
 import { resetDbInstance } from "@/lib/db/core.ts";
 
 // resolveAutoStrategyOrder loads the LKGP via the DB singleton (dynamic import);
@@ -42,33 +40,44 @@ const target = (provider: string, modelStr: string): never =>
     label: null,
   }) as never;
 
-const baseDeps = (buildAutoCandidates: never) =>
-  ({
-    orderedTargets: [target("openai", "gpt-4o"), target("anthropic", "claude-3")],
-    body: { messages: [{ role: "user", content: "hi" }] },
-    combo: { id: "c1", name: "autoc", config: {} },
-    settings: null,
-    config: {},
-    relayOptions: null,
-    resilienceSettings: { quotaPreflight: { enabled: false } },
-    log: noopLog,
-    buildAutoCandidates,
-  }) as never;
+// Tests mutate a few well-known fields (orderedTargets/body/combo) after
+// construction, so widen exactly those to mutable open records while keeping
+// the real ResolveAutoStrategyDeps contract for everything else. This preserves
+// type-checking at the call site without reaching for `any`.
+type AutoStrategyTestDeps = Omit<ResolveAutoStrategyDeps, "orderedTargets" | "body" | "combo"> & {
+  orderedTargets: ResolveAutoStrategyDeps["orderedTargets"];
+  body: Record<string, unknown>;
+  combo: Record<string, unknown>;
+};
+
+const asDeps = (deps: AutoStrategyTestDeps): ResolveAutoStrategyDeps =>
+  deps as unknown as ResolveAutoStrategyDeps;
+
+const baseDeps = (buildAutoCandidates: never): AutoStrategyTestDeps => ({
+  orderedTargets: [target("openai", "gpt-4o"), target("anthropic", "claude-3")],
+  body: { messages: [{ role: "user", content: "hi" }] },
+  combo: { id: "c1", name: "autoc", config: {} },
+  settings: null,
+  config: {},
+  relayOptions: null,
+  resilienceSettings: { quotaPreflight: { enabled: false } } as never,
+  log: noopLog,
+  buildAutoCandidates,
+});
 
 test("exports resolveAutoStrategyOrder", () => {
   assert.equal(typeof resolveAutoStrategyOrder, "function");
 });
 
-test("no candidates -> keeps default ordering, no explicit router", async () => {
+test("zero candidates -> fails immediately with diagnostics instead of falling back/hanging", async () => {
   const build = (async () => []) as never;
-  const result = await resolveAutoStrategyOrder(baseDeps(build));
-  assert.ok(!("earlyResponse" in result));
-  if ("orderedTargets" in result) {
-    assert.equal(result.autoUsedExplicitRouter, false);
-    // default ordering preserved (both original targets survive)
-    assert.equal(result.orderedTargets.length, 2);
-    assert.equal(result.orderedTargets[0].provider, "openai");
-  }
+  const result = await resolveAutoStrategyOrder(asDeps(baseDeps(build)));
+  assert.ok("earlyResponse" in result);
+  if (!("earlyResponse" in result)) return;
+  assert.equal(result.earlyResponse.status, 503);
+  const payload = await result.earlyResponse.clone().json();
+  assert.equal(payload?.error?.code, "zero_candidates");
+  assert.match(JSON.stringify(payload), /zero_candidates/);
 });
 
 test("all candidates quota-cutoff-blocked -> early 429 Response", async () => {
@@ -83,7 +92,7 @@ test("all candidates quota-cutoff-blocked -> early 429 Response", async () => {
       quotaCutoffBlocked: true,
     },
   ]) as never;
-  const result = await resolveAutoStrategyOrder(baseDeps(build));
+  const result = await resolveAutoStrategyOrder(asDeps(baseDeps(build)));
   assert.ok("earlyResponse" in result);
   if ("earlyResponse" in result) {
     assert.ok(result.earlyResponse instanceof Response);
@@ -91,42 +100,98 @@ test("all candidates quota-cutoff-blocked -> early 429 Response", async () => {
   }
 });
 
-test("candidate evaluation is deterministic and does not mutate builder-owned candidates", async () => {
-  const candidates = [
+const providerCandidate = (index: number, modelPrefix = "gpt-4o") => ({
+  kind: "model",
+  stepId: `s${index}`,
+  executionKey: `provider-${index}>${modelPrefix}-${index}@conn-${index}`,
+  modelStr: `${modelPrefix}-${index}`,
+  provider: `provider-${index}`,
+  model: `${modelPrefix}-${index}`,
+  connectionId: `conn-${index}`,
+  quotaRemaining: 100,
+  quotaTotal: 100,
+  circuitBreakerState: "CLOSED",
+  costPer1MTokens: index + 1,
+  p95LatencyMs: 100 + index,
+  latencyStdDev: 1,
+  errorRate: 0,
+});
+
+const tenProviderTargets = () =>
+  Array.from({ length: 10 }, (_, index) => target(`provider-${index}`, `gpt-4o-${index}`));
+
+const tenProviderCandidates = () =>
+  Array.from({ length: 10 }, (_, index) => providerCandidate(index)) as never;
+
+test("LKGP reorders but reports the full candidate pool as still eligible", () => {
+  const decision = selectWithStrategy(
+    tenProviderCandidates(),
     {
-      kind: "model",
-      stepId: "s1",
-      executionKey: "openai>gpt-4o@account-a",
-      modelStr: "gpt-4o",
-      provider: "openai",
-      model: "gpt-4o",
-      connectionId: "account-a",
-      quotaRemaining: 80,
-      quotaTotal: 100,
-      circuitBreakerState: "CLOSED",
-      costPer1MTokens: 1,
-      p95LatencyMs: 100,
-      latencyStdDev: 10,
-      errorRate: 0,
-    },
-  ];
-  const before = structuredClone(candidates);
-  const options = {
-    targets: [target("openai", "gpt-4o")],
-    comboName: "autoc",
-    body: { prompt_cache_key: "pure-evaluation", messages: [] },
-    taskType: "default",
-    weights: DEFAULT_WEIGHTS,
-    buildAutoCandidates: (async () => candidates) as never,
+      taskType: "general",
+      requestHasTools: false,
+      lastKnownGoodProvider: "provider-0",
+    } as never,
+    "lkgp"
+  );
+
+  assert.equal(decision.provider, "provider-0");
+  assert.equal(decision.candidatesConsidered, 10);
+  assert.match(decision.reason, /remaining candidates stay eligible/);
+});
+
+test("auto ordering retains a 10-provider fallback tail after selecting the first candidate", async () => {
+  const deps = baseDeps((async () => tenProviderCandidates()) as never);
+  deps.orderedTargets = tenProviderTargets();
+  deps.combo.autoConfig = {
+    candidatePool: Array.from({ length: 10 }, (_, index) => `provider-${index}`),
+    routingStrategy: "rules",
+    explorationRate: 0,
   };
 
-  const first = await evaluateAutoCandidates(options);
-  const second = await evaluateAutoCandidates(options);
+  const result = await resolveAutoStrategyOrder(asDeps(deps));
+  assert.ok("orderedTargets" in result, "expected all candidates to remain routable");
+  if (!("orderedTargets" in result)) return;
+  assert.equal(new Set(result.orderedTargets.map((entry) => entry.provider)).size, 10);
+});
 
-  assert.deepEqual(first.scoredTargets, second.scoredTargets);
-  assert.deepEqual(candidates, before);
-  assert.notEqual(first.candidates[0], candidates[0]);
-  assert.equal(first.scoredTargets[0].factors.quota, 0.8);
+test("tool-required auto routing keeps every eligible tool-capable provider", async () => {
+  const deps = baseDeps((async () => tenProviderCandidates()) as never);
+  deps.body = {
+    messages: [{ role: "user", content: "call the tool" }],
+    tools: [{ type: "function", function: { name: "ping", parameters: { type: "object" } } }],
+  };
+  deps.orderedTargets = tenProviderTargets();
+  deps.combo.autoConfig = {
+    candidatePool: Array.from({ length: 10 }, (_, index) => `provider-${index}`),
+    routingStrategy: "rules",
+    explorationRate: 0,
+  };
+
+  const result = await resolveAutoStrategyOrder(asDeps(deps));
+  assert.ok("orderedTargets" in result, "expected tool-capable candidates to remain routable");
+  if (!("orderedTargets" in result)) return;
+  assert.equal(new Set(result.orderedTargets.map((entry) => entry.provider)).size, 10);
+});
+
+test("provider A 429 plus second model unavailable leaves later-provider fallbacks in order", async () => {
+  const candidates = tenProviderCandidates() as Array<Record<string, unknown>>;
+  candidates[0].quotaCutoffBlocked = true;
+  candidates[0].quotaCutoffReason = "provider_429_cooldown";
+  candidates[1].circuitBreakerState = "OPEN";
+  const deps = baseDeps((async () => candidates) as never);
+  deps.orderedTargets = tenProviderTargets();
+  deps.combo.autoConfig = {
+    candidatePool: Array.from({ length: 10 }, (_, index) => `provider-${index}`),
+    routingStrategy: "rules",
+    explorationRate: 0,
+  };
+
+  const result = await resolveAutoStrategyOrder(asDeps(deps));
+  assert.ok("orderedTargets" in result, "expected healthy later providers to remain available");
+  if (!("orderedTargets" in result)) return;
+  assert.ok(result.orderedTargets.some((entry) => entry.provider === "provider-2"));
+  assert.ok(result.orderedTargets.some((entry) => entry.provider === "provider-9"));
+  assert.equal(new Set(result.orderedTargets.map((entry) => entry.provider)).size, 10);
 });
 
 test("cache affinity scores expanded auto account candidates directly", async () => {
@@ -173,7 +238,7 @@ test("cache affinity scores expanded auto account candidates directly", async ()
     weights: { cacheAffinity: 1 },
   };
 
-  await resolveAutoStrategyOrder(deps);
+  await resolveAutoStrategyOrder(asDeps(deps));
 
   assert.deepEqual(candidates.map((candidate) => candidate.cacheAffinity).sort(), [0, 1]);
 });

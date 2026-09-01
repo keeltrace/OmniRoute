@@ -1,0 +1,42 @@
+name: Build OmniRoute auto-fallback image
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout requested source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build patched image
+        run: docker buildx build --load --tag omniroute:3.8.50-auto-fallback-fix --target runner-base .
+
+      - name: Save image
+        run: docker save omniroute:3.8.50-auto-fallback-fix | gzip -1 > omniroute-3.8.50-auto-fallback-fix.tar.gz
+
+      - name: Record image metadata
+        run: |
+          echo "source_sha=${GITHUB_SHA}" > image-digest.txt
+          docker image inspect omniroute:3.8.50-auto-fallback-fix --format '{{.Id}}' >> image-digest.txt
+          sha256sum omniroute-3.8.50-auto-fallback-fix.tar.gz > image-artifact.sha256
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: omniroute-3.8.50-auto-fallback-fix
+          path: |
+            omniroute-3.8.50-auto-fallback-fix.tar.gz
+            image-digest.txt
+            image-artifact.sha256
+          retention-days: 7
