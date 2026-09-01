@@ -43,7 +43,11 @@ function classifyAutoModel(
 
   const suffix = model.slice(5);
   if (VALID_AUTO_VARIANTS.has(suffix as AutoVariant)) {
-    return { recognizedBuiltInAuto: true };
+    // Preserve the explicit virtual namespace. Returning only
+    // recognizedBuiltInAuto here made valid ids such as auto/fast parse as
+    // generic default auto, which then let provider/model inference compete with
+    // OmniRoute's virtual auto namespace.
+    return { variant: suffix as AutoVariant, recognizedBuiltInAuto: true };
   }
   const parsedSuffix = parseAutoSuffix(suffix);
   if (parsedSuffix.valid) {

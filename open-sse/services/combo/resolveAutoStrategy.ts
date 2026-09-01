@@ -44,6 +44,7 @@ import type {
   ComboLogger,
   ResolvedComboTarget,
 } from "./types.ts";
+import type { ComboExclusion } from "../../utils/error.ts";
 
 /**
  * Dependency-injected `buildAutoCandidates` — it lives in `combo.ts` (the host of
@@ -112,10 +113,34 @@ export async function resolveAutoStrategyOrder(
 
   const requestHasTools = Array.isArray(body?.tools) && body.tools.length > 0;
   let eligibleTargets = [...orderedTargets];
+  const excludedDiagnostics: ComboExclusion[] = [];
   const compatFilterFailOpen =
     config?.compatFilterFailOpen === true ||
     (settings as { compatFilterFailOpen?: unknown } | null | undefined)?.compatFilterFailOpen ===
       true;
+
+  // For virtual/pure auto, broaden before capability filters. Filtering the
+  // seed/default targets first can permanently hide healthy configured
+  // providers, which is the failure mode where bare `auto` collapsed to a tiny
+  // provider-specific pool before fallback ever had a chance to run.
+  eligibleTargets = await expandAutoComboCandidatePool(eligibleTargets, combo);
+
+  if (eligibleTargets.length === 0) {
+    return {
+      earlyResponse: errorResponseWithComboDiagnostics(
+        503,
+        `No target in combo ${combo.name} is eligible for auto routing`,
+        {
+          poolSize: orderedTargets.length,
+          attempted: 0,
+          excluded: [],
+          attemptOrder: [],
+          terminalReason: "zero_candidates",
+        },
+        { code: "zero_candidates", type: "unavailable_error" }
+      ),
+    };
+  }
 
   if (requestHasTools) {
     // Keep #5240 prompt-emulation providers (toolCalling:"emulated") even when
@@ -125,6 +150,15 @@ export async function resolveAutoStrategyOrder(
         supportsToolCalling(target.modelStr) || providerSupportsEmulatedToolCalling(target.provider)
     );
     if (filtered.length > 0) {
+      for (const target of eligibleTargets) {
+        if (!filtered.includes(target)) {
+          excludedDiagnostics.push({
+            provider: target.provider,
+            model: target.modelStr,
+            reason: "tools",
+          });
+        }
+      }
       eligibleTargets = filtered;
     } else if (compatFilterFailOpen) {
       log.warn(
@@ -178,6 +212,15 @@ export async function resolveAutoStrategyOrder(
         "COMBO",
         `Auto strategy: context-window filter kept ${filteredByContext.length}/${eligibleTargets.length} candidates (est. ${estimatedInputTokens} tokens)`
       );
+      for (const target of eligibleTargets) {
+        if (!filteredByContext.includes(target)) {
+          excludedDiagnostics.push({
+            provider: target.provider,
+            model: target.modelStr,
+            reason: "context_window",
+          });
+        }
+      }
       eligibleTargets = filteredByContext;
     } else {
       log.warn(
@@ -185,8 +228,23 @@ export async function resolveAutoStrategyOrder(
         `Auto strategy: all candidates filtered by approximate context-window policy (est. ${estimatedInputTokens} tokens), falling back to full pool`
       );
     }
+  }
 
-    eligibleTargets = await expandAutoComboCandidatePool(eligibleTargets, combo);
+  if (eligibleTargets.length === 0) {
+    return {
+      earlyResponse: errorResponseWithComboDiagnostics(
+        503,
+        `No target in combo ${combo.name} remained after auto routing filters`,
+        {
+          poolSize: orderedTargets.length,
+          attempted: 0,
+          excluded: excludedDiagnostics,
+          attemptOrder: [],
+          terminalReason: "zero_candidates",
+        },
+        { code: "zero_candidates", type: "unavailable_error" }
+      ),
+    };
   }
 
   const prompt = extractPromptForIntent(body);
@@ -282,6 +340,15 @@ export async function resolveAutoStrategyOrder(
   );
   const quotaBlockedCount = candidates.length - routableCandidates.length;
   if (quotaBlockedCount > 0) {
+    for (const candidate of candidates) {
+      if (candidate.quotaCutoffBlocked === true) {
+        excludedDiagnostics.push({
+          provider: candidate.provider,
+          model: candidate.modelStr,
+          reason: candidate.quotaCutoffReason || "quota_cutoff",
+        });
+      }
+    }
     log.info(
       "COMBO",
       `Auto strategy: quota cutoff skipped ${quotaBlockedCount}/${candidates.length} account candidates`
@@ -291,12 +358,41 @@ export async function resolveAutoStrategyOrder(
   _registerExecutionCandidates(routableCandidates);
   if (candidates.length > 0 && routableCandidates.length === 0) {
     return {
-      earlyResponse: unavailableResponse(
+      earlyResponse: errorResponseWithComboDiagnostics(
         429,
-        "All auto strategy candidates are below configured quota cutoffs"
+        "All auto strategy candidates are below configured quota cutoffs",
+        {
+          poolSize: candidates.length,
+          attempted: 0,
+          excluded: excludedDiagnostics,
+          attemptOrder: [],
+          terminalReason: "quota_cutoff",
+        },
+        { code: "quota_cutoff", type: "rate_limit_error" }
       ),
     };
   }
+  if (candidates.length === 0) {
+    return {
+      earlyResponse: errorResponseWithComboDiagnostics(
+        503,
+        `No auto strategy candidates could be constructed for combo ${combo.name}`,
+        {
+          poolSize: eligibleTargets.length,
+          attempted: 0,
+          excluded: eligibleTargets.map((target) => ({
+            provider: target.provider,
+            model: target.modelStr,
+            reason: "candidate_construction",
+          })),
+          attemptOrder: [],
+          terminalReason: "zero_candidates",
+        },
+        { code: "zero_candidates", type: "unavailable_error" }
+      ),
+    };
+  }
+
   if (routableCandidates.length > 0) {
     let selectedProvider: string | null = null;
     let selectedModel: string | null = null;
