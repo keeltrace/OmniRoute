@@ -48,6 +48,14 @@ export function getModelPricing(provider: string, model: string): ModelPricing {
   return { inputCostPer1M: 5.0, outputCostPer1M: 15.0, isFree: false };
 }
 
+/** Read only the curated entry; unlike getModelPricing, never returns the
+ * conservative operational fallback for an unknown model. */
+export function resolveKnownModelPricing(provider: string, model: string): ModelPricing | null {
+  const directKey = model.toLowerCase();
+  const providerKey = `${provider}/${model}`.toLowerCase();
+  return KNOWN_MODEL_PRICING[directKey] ?? KNOWN_MODEL_PRICING[providerKey] ?? null;
+}
+
 export function isExplicitlyFree(provider: string, config: TierConfig): boolean {
   return config.freeProviders.includes(provider.toLowerCase());
 }

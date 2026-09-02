@@ -20,6 +20,7 @@ import { supportsToolCalling } from "@omniroute/open-sse/services/modelCapabilit
 import { parseModel } from "@omniroute/open-sse/services/model.ts";
 import { classifyTier } from "@omniroute/open-sse/services/tierResolver.ts";
 import { classifyConnectionBilling } from "@omniroute/open-sse/services/autoCombo/connectionBilling.ts";
+import { resolveModelEconomics } from "@omniroute/open-sse/services/autoCombo/modelEconomics.ts";
 import { getCachedProviderConnections } from "@/lib/db/readCache";
 import { createVirtualAutoCombo } from "@omniroute/open-sse/services/autoCombo/virtualFactory.ts";
 
@@ -147,16 +148,18 @@ export async function POST(request: Request): Promise<Response> {
         authType: typeof connection?.authType === "string" ? connection.authType : null,
       });
       const tier = classifyTier(candidate.provider, candidate.model);
-      const modelPriceClass = tier.tier === "free" || tier.hasFreeTier ? "free" :
-        tier.tier === "cheap" || tier.tier === "premium" ? "paid" : "unknown";
-      const variantClass = tier.hasFreeTier ? "free" : "unknown";
-      const authoritativeEconomicClass = billing.billing === "subscription"
-        ? "subscription"
-        : billing.billing === "keyless"
-          ? "free"
-          : billing.billing === "unknown"
-            ? "unknown"
-            : modelPriceClass;
+      const economic = resolveModelEconomics(candidate.provider, candidate.model, candidate as never);
+      const modelPriceClass = economic.priceClass;
+      const variantClass = economic.priceClass === "free" ? "free" : "unknown";
+      const authoritativeEconomicClass = modelPriceClass === "free"
+        ? "free"
+        : billing.billing === "subscription"
+          ? "subscription"
+          : billing.billing === "included"
+            ? "included"
+            : billing.billing === "paid"
+              ? "paid"
+              : "unknown";
       return {
         ...candidate,
         currentAutoScore: scores.get(candidate.executionKey)?.score ?? null,
@@ -166,10 +169,13 @@ export async function POST(request: Request): Promise<Response> {
         toolCalling: supportsToolCalling(finalTarget.modelStr),
         contextLimit: getModelContextLimitForModelString(finalTarget.modelStr),
         economicClass: authoritativeEconomicClass,
-        economicClassSource: `candidate.connectionId=${candidate.connectionId ?? "none"}; connection.provider=${String(connection?.provider ?? "unknown")}; billing=${billing.billing}; model tier=${tier.tier}; variant=${variantClass}`,
+        economicClassSource: `${economic.source}: ${economic.reason}; connection billing=${billing.billing}; tier=${tier.tier}`,
         modelPriceClass,
         connectionBillingClass: billing.billing,
         variantClass,
+        economicMetadataAuthoritative: economic.authoritative,
+        economicMetadataSource: economic.source,
+        economicConfidence: economic.authoritative ? "known" : "unknown",
       } as unknown as AutoProviderCandidate;
     });
   }

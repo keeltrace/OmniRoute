@@ -22,6 +22,12 @@ export interface SyncedAvailableModel {
   // #4264: image-input capability captured at sync time (e.g. OpenRouter
   // `architecture.input_modalities`/`modality`) so the catalog can surface vision.
   supportsVision?: boolean;
+  /** Economic fields are retained only when explicitly supplied by discovery. */
+  isFree?: boolean;
+  inputCostPer1M?: number;
+  outputCostPer1M?: number;
+  freeQuotaLimit?: number;
+  economicMetadataSource?: string;
 }
 
 export type SyncedAvailableModelInput = Omit<SyncedAvailableModel, "source"> & {
@@ -87,6 +93,11 @@ function normalizeSyncedAvailableModel(model: unknown): SyncedAvailableModel | n
     ...(typeof record.supportsTools === "boolean" ? { supportsTools: record.supportsTools } : {}),
     ...(typeof record.supportsVideo === "boolean" ? { supportsVideo: record.supportsVideo } : {}),
     ...(record.supportsVision === true ? { supportsVision: true } : {}),
+    ...(typeof record.isFree === "boolean" ? { isFree: record.isFree } : {}),
+    ...(typeof record.inputCostPer1M === "number" ? { inputCostPer1M: record.inputCostPer1M } : {}),
+    ...(typeof record.outputCostPer1M === "number" ? { outputCostPer1M: record.outputCostPer1M } : {}),
+    ...(typeof record.freeQuotaLimit === "number" ? { freeQuotaLimit: record.freeQuotaLimit } : {}),
+    ...(toNonEmptyString(record.economicMetadataSource) ? { economicMetadataSource: toNonEmptyString(record.economicMetadataSource)! } : {}),
   };
 }
 
