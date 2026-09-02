@@ -61,7 +61,9 @@ export interface ModelUtilityProfile {
   scarcityCost: number;
   currentAutoScore: number | null;
   observedCurrentRank?: number;
-  currentFactors: Record<string, number | null>;
+  currentFactors: Record<string, number | null> | null;
+  currentRankSource?: "auto_score" | "fallback_tail";
+  fallbackTailIndex?: number;
   hardEligible: boolean;
   exclusionReason?: string;
 }
@@ -89,6 +91,8 @@ export interface RankLabRow extends ModelUtilityProfile, RequestAwareScore {
   whyThisRank: string;
   whyNotHigher: string;
   whyNotLower: string;
+  currentRankSource?: "auto_score" | "fallback_tail";
+  fallbackTailIndex?: number;
   counterfactuals?: Record<string, { rank: number | null; score: number }>;
 }
 
@@ -231,6 +235,8 @@ export function buildModelUtilityProfile(candidate: AutoProviderCandidate, reque
     observedCurrentRank: typeof (candidate as unknown as Record<string, unknown>).observedCurrentRank === "number"
       ? Number((candidate as unknown as Record<string, unknown>).observedCurrentRank) : undefined,
     currentFactors: ((candidate as unknown as Record<string, unknown>).currentFactors as Record<string, number | null> | undefined) ?? {}, hardEligible: true,
+    currentRankSource: ((candidate as unknown as Record<string, unknown>).currentRankSource as "auto_score" | "fallback_tail" | undefined),
+    fallbackTailIndex: Number.isFinite(Number((candidate as unknown as Record<string, unknown>).fallbackTailIndex)) ? Number((candidate as unknown as Record<string, unknown>).fallbackTailIndex) : undefined,
   };
 }
 

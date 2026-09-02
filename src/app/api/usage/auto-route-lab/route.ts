@@ -17,6 +17,7 @@ import { resolveComboSetupConfig } from "@omniroute/open-sse/services/comboConfi
 import { resolveResilienceSettings } from "@/lib/resilience/settings";
 import { resolveComboTargets, getModelContextLimitForModelString } from "@omniroute/open-sse/services/combo/comboStructure.ts";
 import { supportsToolCalling } from "@omniroute/open-sse/services/modelCapabilities.ts";
+import { parseModel } from "@omniroute/open-sse/services/model.ts";
 import { classifyTier } from "@omniroute/open-sse/services/tierResolver.ts";
 import { classifyConnectionBilling } from "@omniroute/open-sse/services/autoCombo/connectionBilling.ts";
 import { getCachedProviderConnections } from "@/lib/db/readCache";
@@ -106,14 +107,37 @@ export async function POST(request: Request): Promise<Response> {
     });
     if ("earlyResponse" in evaluation) return evaluation.earlyResponse;
     const scores = new Map(evaluation.scoringFactors.map((entry) => [entry.executionKey, entry]));
-    const targetByKey = new Map(evaluation.orderedTargets.map((target) => [target.executionKey, target]));
     const connectionRows = await getCachedProviderConnections({ isActive: true });
     const connectionById = new Map(connectionRows.map((row) => {
       const value = row as Record<string, unknown>;
       return [String(value.id ?? ""), value] as const;
     }));
-    candidates = evaluation.sourceCandidates.map((candidate) => {
-      const target = targetByKey.get(candidate.executionKey);
+    const scoredKeys = new Set(evaluation.scoringFactors.map((entry) => entry.executionKey));
+    const candidateByKey = new Map(evaluation.sourceCandidates.map((candidate) => [candidate.executionKey, candidate]));
+    candidates = evaluation.orderedTargets.map((finalTarget, index) => {
+      const parsedTarget = parseModel(finalTarget.modelStr);
+      const existing = candidateByKey.get(finalTarget.executionKey);
+      const candidate = existing ?? {
+        stepId: finalTarget.stepId,
+        executionKey: finalTarget.executionKey,
+        modelStr: finalTarget.modelStr,
+        provider: finalTarget.provider || parsedTarget.provider || "unknown",
+        model: parsedTarget.model || finalTarget.modelStr,
+        connectionId: finalTarget.connectionId ?? undefined,
+        quotaRemaining: 100,
+        quotaTotal: 100,
+        circuitBreakerState: "CLOSED",
+        costPer1MTokens: 1,
+        p95LatencyMs: 1000,
+        latencyStdDev: 100,
+        errorRate: 0.05,
+        accountTier: "standard",
+        quotaResetIntervalSecs: 86400,
+        contextAffinity: 0.5,
+        sessionAvailability: 1,
+        resetWindowAffinity: 0.5,
+        connectionPoolSize: 1,
+      } as unknown as AutoProviderCandidate;
       const connection = candidate.connectionId ? connectionById.get(candidate.connectionId) : undefined;
       const billing = classifyConnectionBilling({
         // The concrete connection row is authoritative. Provider aliases in a
@@ -135,10 +159,12 @@ export async function POST(request: Request): Promise<Response> {
             : modelPriceClass;
       return {
         ...candidate,
-        currentAutoScore: scores.get(candidate.executionKey)?.score,
-        currentFactors: scores.get(candidate.executionKey)?.factors,
-        toolCalling: target ? supportsToolCalling(target.modelStr) : undefined,
-        contextLimit: target ? getModelContextLimitForModelString(target.modelStr) : undefined,
+        currentAutoScore: scores.get(candidate.executionKey)?.score ?? null,
+        currentFactors: scores.get(candidate.executionKey)?.factors ?? null,
+        currentRankSource: scoredKeys.has(candidate.executionKey) ? "auto_score" : "fallback_tail",
+        ...(scoredKeys.has(candidate.executionKey) ? {} : { fallbackTailIndex: index + 1 }),
+        toolCalling: supportsToolCalling(finalTarget.modelStr),
+        contextLimit: getModelContextLimitForModelString(finalTarget.modelStr),
         economicClass: authoritativeEconomicClass,
         economicClassSource: `candidate.connectionId=${candidate.connectionId ?? "none"}; connection.provider=${String(connection?.provider ?? "unknown")}; billing=${billing.billing}; model tier=${tier.tier}; variant=${variantClass}`,
         modelPriceClass,
