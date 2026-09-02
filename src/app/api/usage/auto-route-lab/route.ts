@@ -12,11 +12,11 @@ import {
 } from "@omniroute/open-sse/services/autoCombo/requestAwareRankLab.ts";
 import type { AutoProviderCandidate } from "@omniroute/open-sse/services/combo/types.ts";
 import { buildAutoCandidates } from "@omniroute/open-sse/services/combo.ts";
-import { planAutoRequest } from "@omniroute/open-sse/services/combo/resolveAutoStrategy.ts";
-import { parseAutoConfig } from "@omniroute/open-sse/services/combo/autoConfig.ts";
+import { planAutoRequestWithPipeline } from "@omniroute/open-sse/services/combo/targetResolution.ts";
+import { resolveComboSetupConfig } from "@omniroute/open-sse/services/comboConfig.ts";
+import { resolveResilienceSettings } from "@/lib/resilience/settings";
 import { resolveComboTargets, getModelContextLimitForModelString } from "@omniroute/open-sse/services/combo/comboStructure.ts";
 import { supportsToolCalling } from "@omniroute/open-sse/services/modelCapabilities.ts";
-import { DEFAULT_WEIGHTS } from "@omniroute/open-sse/services/autoCombo/scoring.ts";
 import { classifyTier } from "@omniroute/open-sse/services/tierResolver.ts";
 import { classifyConnectionBilling } from "@omniroute/open-sse/services/autoCombo/connectionBilling.ts";
 import { getCachedProviderConnections } from "@/lib/db/readCache";
@@ -87,13 +87,26 @@ export async function POST(request: Request): Promise<Response> {
       : undefined);
     if (!combo) return NextResponse.json({ error: "No auto combo is configured" }, { status: 404 });
     const targets = resolveComboTargets(combo, combos);
-    const { resetWindowConfig } = parseAutoConfig(combo, targets);
-    const evaluation = await planAutoRequest({
-      targets, comboName: combo.name, body, taskType: "coding", weights: DEFAULT_WEIGHTS,
-      resetWindowConfig, buildAutoCandidates,
+    const config = resolveComboSetupConfig(combo, null);
+    const log = { info() {}, warn() {}, error() {}, debug() {} };
+    const evaluation = await planAutoRequestWithPipeline({
+      body,
+      combo,
+      strategy: "auto",
+      config,
+      settings: null,
+      allCombos: combos,
+      apiKeyAllowedConnections: null,
+      log,
+      resilienceSettings: resolveResilienceSettings(null),
+      buildAutoCandidates,
+      // Rank Lab is structurally planning-only; this callback is never reachable.
+      handleSingleModelWithTimeout: async () => { throw new Error("RANK_LAB_DISPATCH_BUG"); },
+      readOnlyPlan: true,
     });
+    if ("earlyResponse" in evaluation) return evaluation.earlyResponse;
     const scores = new Map(evaluation.scoringFactors.map((entry) => [entry.executionKey, entry]));
-    const targetByKey = new Map(targets.map((target) => [target.executionKey, target]));
+    const targetByKey = new Map(evaluation.orderedTargets.map((target) => [target.executionKey, target]));
     const connectionRows = await getCachedProviderConnections({ isActive: true });
     const connectionById = new Map(connectionRows.map((row) => {
       const value = row as Record<string, unknown>;
@@ -103,18 +116,23 @@ export async function POST(request: Request): Promise<Response> {
       const target = targetByKey.get(candidate.executionKey);
       const connection = candidate.connectionId ? connectionById.get(candidate.connectionId) : undefined;
       const billing = classifyConnectionBilling({
-        provider: candidate.provider,
+        // The concrete connection row is authoritative. Provider aliases in a
+        // virtual target must not prevent the billing join by stable ID.
+        provider: typeof connection?.provider === "string" ? connection.provider : candidate.provider,
         connectionId: candidate.connectionId,
         authType: typeof connection?.authType === "string" ? connection.authType : null,
       });
       const tier = classifyTier(candidate.provider, candidate.model);
+      const modelPriceClass = tier.tier === "free" || tier.hasFreeTier ? "free" :
+        tier.tier === "cheap" || tier.tier === "premium" ? "paid" : "unknown";
+      const variantClass = tier.hasFreeTier ? "free" : "unknown";
       const authoritativeEconomicClass = billing.billing === "subscription"
         ? "subscription"
         : billing.billing === "keyless"
           ? "free"
           : billing.billing === "unknown"
             ? "unknown"
-            : tier.tier === "free" ? "free" : "paid";
+            : modelPriceClass;
       return {
         ...candidate,
         currentAutoScore: scores.get(candidate.executionKey)?.score,
@@ -122,9 +140,10 @@ export async function POST(request: Request): Promise<Response> {
         toolCalling: target ? supportsToolCalling(target.modelStr) : undefined,
         contextLimit: target ? getModelContextLimitForModelString(target.modelStr) : undefined,
         economicClass: authoritativeEconomicClass,
-        economicClassSource: billing.billing === "unknown" ? "unknown connection billing" : `connection billing: ${billing.billing}; model tier: ${tier.tier}`,
-        modelPriceClass: tier.tier === "free" ? "free" : tier.tier === "cheap" ? "paid" : "paid",
+        economicClassSource: `candidate.connectionId=${candidate.connectionId ?? "none"}; connection.provider=${String(connection?.provider ?? "unknown")}; billing=${billing.billing}; model tier=${tier.tier}; variant=${variantClass}`,
+        modelPriceClass,
         connectionBillingClass: billing.billing,
+        variantClass,
       } as unknown as AutoProviderCandidate;
     });
   }

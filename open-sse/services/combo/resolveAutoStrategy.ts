@@ -79,11 +79,17 @@ export interface ResolveAutoStrategyDeps {
   resilienceSettings: ResilienceSettings;
   log: ComboLogger;
   buildAutoCandidates: BuildAutoCandidates;
+  readOnlyPlan?: boolean;
 }
 
 export type ResolveAutoStrategyResult =
   | { earlyResponse: Response }
-  | { orderedTargets: ResolvedComboTarget[]; autoUsedExplicitRouter: boolean };
+  | {
+      orderedTargets: ResolvedComboTarget[];
+      autoUsedExplicitRouter: boolean;
+      scoringFactors: Array<{ executionKey: string; score: number; factors: Record<string, unknown> }>;
+      sourceCandidates: AutoProviderCandidate[];
+    };
 
 export interface EvaluateAutoCandidatesOptions {
   targets: ResolvedComboTarget[];
@@ -323,7 +329,7 @@ export async function resolveAutoStrategyOrder(
   const systemPrompt = typeof combo?.system_message === "string" ? combo.system_message : undefined;
   const intentConfig = getIntentConfig(settings, combo);
   const intent = classifyWithConfig(prompt, intentConfig, systemPrompt);
-  recordComboIntent(combo.name, intent);
+  if (!deps.readOnlyPlan) recordComboIntent(combo.name, intent);
   const taskType = mapIntentToTaskType(intent);
 
   const {
@@ -437,7 +443,7 @@ export async function resolveAutoStrategyOrder(
     );
   }
   // G2: Register candidates so chatCore can mark quotaSoftPenalty via setCandidateQuotaSoftPenalty.
-  _registerExecutionCandidates(routableCandidates);
+  if (!deps.readOnlyPlan) _registerExecutionCandidates(routableCandidates);
   if (candidates.length > 0 && routableCandidates.length === 0) {
     return {
       earlyResponse: errorResponseWithComboDiagnostics(
@@ -588,5 +594,14 @@ export async function resolveAutoStrategyOrder(
     log.warn("COMBO", "Auto strategy has no candidates, keeping default ordering");
   }
 
-  return { orderedTargets, autoUsedExplicitRouter };
+  return {
+    orderedTargets,
+    autoUsedExplicitRouter,
+    scoringFactors: scoredTargets.map((entry) => ({
+      executionKey: entry.target.executionKey,
+      score: entry.score,
+      factors: entry.factors as unknown as Record<string, unknown>,
+    })),
+    sourceCandidates,
+  };
 }

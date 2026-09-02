@@ -112,6 +112,20 @@ export interface ResolveComboTargetPipelineDeps {
    */
   buildAutoCandidates: ResolveAutoStrategyDeps["buildAutoCandidates"];
   hiddenModelsByProvider?: HiddenModelsByProvider;
+  /** Planning-only mode: execute the same read-only ordering stages without state writes. */
+  readOnlyPlan?: boolean;
+}
+
+export interface PreparedComboTargetPool {
+  orderedTargets: ResolvedComboTarget[];
+  stickyWeightedLimit: number;
+  getWeightedStepKeyForTarget: (target: ResolvedComboTarget) => string | null;
+  stickyWeightedKey: string | null;
+}
+
+export interface FinalizedComboTargetPlan extends ResolvedComboTargetPipeline {
+  scoringFactors: Array<{ executionKey: string; score: number; factors: Record<string, unknown> }>;
+  sourceCandidates: import("./types.ts").AutoProviderCandidate[];
 }
 
 export interface ResolvedComboTargetPipeline {
@@ -406,6 +420,8 @@ async function orderByStrategy(
       orderedTargets: ResolvedComboTarget[];
       autoUsedExplicitRouter: boolean;
       quotaShareRelease: (() => void) | null;
+      scoringFactors: Array<{ executionKey: string; score: number; factors: Record<string, unknown> }>;
+      sourceCandidates: import("./types.ts").AutoProviderCandidate[];
     }
 > {
   const { strategy, body, combo, settings, config, log } = deps;
@@ -420,12 +436,15 @@ async function orderByStrategy(
       resilienceSettings: deps.resilienceSettings,
       log,
       buildAutoCandidates: deps.buildAutoCandidates,
+      readOnlyPlan: deps.readOnlyPlan,
     });
     if ("earlyResponse" in autoResult) return { earlyResponse: autoResult.earlyResponse };
     return {
       orderedTargets: autoResult.orderedTargets,
       autoUsedExplicitRouter: autoResult.autoUsedExplicitRouter,
       quotaShareRelease: null,
+      scoringFactors: autoResult.scoringFactors ?? [],
+      sourceCandidates: autoResult.sourceCandidates ?? [],
     };
   }
   const { orderedTargets, quotaShareRelease } = await applyStrategyOrdering(
@@ -440,7 +459,13 @@ async function orderByStrategy(
       sessionKey: deps.relayOptions?.sessionId,
     }
   );
-  return { orderedTargets, autoUsedExplicitRouter: false, quotaShareRelease };
+  return {
+    orderedTargets,
+    autoUsedExplicitRouter: false,
+    quotaShareRelease,
+    scoringFactors: [],
+    sourceCandidates: [],
+  };
 }
 
 /**
@@ -482,7 +507,7 @@ async function applyContinuityFilters(
   // the 15-minute TTL — silently defeating the combo's priority order until the
   // binding ages out or the process restarts (user report: disabling stickiness
   // on orchestrator still pinned opencode-go/mimo-v2.5-max first).
-  if (disableSessionStickiness) {
+  if (disableSessionStickiness && !deps.readOnlyPlan) {
     clearStickyBindingsForCombo(combo.name);
   }
   const sticky: ApplyStickinessResult = disableSessionStickiness
@@ -515,7 +540,7 @@ async function applyContinuityFilters(
       const effectiveSessionId: string | null = combo.context_cache_protection
         ? (relayOptions?.sessionId ?? null)
         : null;
-      recordComboFailure(effectiveSessionId, combo.name);
+      if (!deps.readOnlyPlan) recordComboFailure(effectiveSessionId, combo.name);
       return {
         earlyResponse: errorResponseWithComboDiagnostics(
           400,
@@ -541,7 +566,7 @@ async function applyContinuityFilters(
     const effectiveSessionId: string | null = combo.context_cache_protection
       ? (relayOptions?.sessionId ?? null)
       : null;
-    recordComboFailure(effectiveSessionId, combo.name);
+    if (!deps.readOnlyPlan) recordComboFailure(effectiveSessionId, combo.name);
     const { message, diagnostics } = buildEmptyComboTargetsPayload(
       preContextTargets,
       config.contextRequirements?.minContextWindow
@@ -693,9 +718,9 @@ async function applyPromptCacheStage(
   return nextTargets;
 }
 
-export async function resolveComboTargetPipeline(
+export async function prepareComboTargetPool(
   deps: ResolveComboTargetPipelineDeps
-): Promise<ResolveComboTargetPipelineResult> {
+): Promise<PreparedComboTargetPool> {
   const { body, combo, strategy, config, allCombos, log, isModelAvailable, settings } = deps;
 
   const { expandedCombo, expandedAllCombos } = await expandComboWildcards(combo, allCombos);
@@ -738,15 +763,27 @@ export async function resolveComboTargetPipeline(
 
   logTargetPoolSize(strategy, allCombos, orderedTargets, stickyWeightedKey, log);
 
-  const pipelineResponse = await dispatchSmartPipeline(
-    deps,
-    orderedTargets.map((target) => target.modelStr)
-  );
-  if (pipelineResponse) return { earlyResponse: pipelineResponse };
+  return {
+    orderedTargets,
+    stickyWeightedLimit,
+    getWeightedStepKeyForTarget,
+    stickyWeightedKey,
+  };
+}
+
+export async function finalizeComboTargetPlan(
+  deps: ResolveComboTargetPipelineDeps,
+  prepared: PreparedComboTargetPool
+): Promise<
+  | { earlyResponse: Response }
+  | (FinalizedComboTargetPlan & { scoringFactors: Array<{ executionKey: string; score: number; factors: Record<string, unknown> }> })
+> {
+  const { strategy, isModelAvailable } = deps;
+  let orderedTargets = prepared.orderedTargets;
 
   const ordering = await orderByStrategy(deps, orderedTargets);
   if ("earlyResponse" in ordering) return ordering;
-  const { autoUsedExplicitRouter, quotaShareRelease } = ordering;
+  const { autoUsedExplicitRouter, quotaShareRelease, scoringFactors } = ordering;
 
   const continuity = await applyContinuityFilters(deps, ordering.orderedTargets);
   if ("earlyResponse" in continuity) {
@@ -774,10 +811,36 @@ export async function resolveComboTargetPipeline(
 
   return {
     orderedTargets,
-    stickyWeightedLimit,
-    getWeightedStepKeyForTarget,
+    stickyWeightedLimit: prepared.stickyWeightedLimit,
+    getWeightedStepKeyForTarget: prepared.getWeightedStepKeyForTarget,
     sticky: continuity.sticky,
     preScreenMap,
     quotaShareRelease,
+    scoringFactors,
+    sourceCandidates: ordering.sourceCandidates,
   };
+}
+
+/**
+ * Read-only production planning seam. It deliberately stops before
+ * dispatchSmartPipeline/provider execution while sharing every target
+ * preparation and final pre-dispatch ordering stage with production.
+ */
+export async function planAutoRequestWithPipeline(
+  deps: ResolveComboTargetPipelineDeps
+): Promise<ResolveComboTargetPipelineResult | (FinalizedComboTargetPlan & { scoringFactors: Array<{ executionKey: string; score: number; factors: Record<string, unknown> }> })> {
+  const prepared = await prepareComboTargetPool({ ...deps, readOnlyPlan: true });
+  return finalizeComboTargetPlan({ ...deps, readOnlyPlan: true }, prepared);
+}
+
+export async function resolveComboTargetPipeline(
+  deps: ResolveComboTargetPipelineDeps
+): Promise<ResolveComboTargetPipelineResult> {
+  const prepared = await prepareComboTargetPool(deps);
+  const pipelineResponse = await dispatchSmartPipeline(
+    deps,
+    prepared.orderedTargets.map((target) => target.modelStr)
+  );
+  if (pipelineResponse) return { earlyResponse: pipelineResponse };
+  return finalizeComboTargetPlan(deps, prepared);
 }

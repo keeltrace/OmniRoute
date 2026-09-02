@@ -8,6 +8,12 @@ import {
   type ModelUtilityProfile,
 } from "../../open-sse/services/autoCombo/requestAwareRankLab.ts";
 import { planAutoRequest } from "../../open-sse/services/combo/resolveAutoStrategy.ts";
+import {
+  planAutoRequestWithPipeline,
+  resolveComboTargetPipeline,
+} from "../../open-sse/services/combo/targetResolution.ts";
+import { resolveComboSetupConfig } from "../../open-sse/services/comboConfig.ts";
+import { resolveResilienceSettings } from "../../src/lib/resilience/settings.ts";
 
 function candidate(overrides: Record<string, unknown> = {}) {
   return {
@@ -157,6 +163,41 @@ test("read-only production planning seam preserves scorer order and cannot dispa
   // The injected builder is candidate preparation, not an executor; the seam
   // has no executor callback and therefore cannot dispatch upstream.
   assert.equal(dispatchCalls, 1);
+});
+
+test("Rank Lab shares the exact production pre-dispatch order", async () => {
+  const combo = {
+    id: "parity-auto",
+    name: "parity-auto",
+    strategy: "auto",
+    models: ["free/small", "free/large"],
+    config: {},
+  };
+  const targets = [
+    { kind: "model", stepId: "a", executionKey: "free/small", modelStr: "free/small", provider: "free", connectionId: null },
+    { kind: "model", stepId: "b", executionKey: "free/large", modelStr: "free/large", provider: "free", connectionId: null },
+  ] as never;
+  const built = [
+    candidate({ executionKey: "parity-auto-model-1-free-small", model: "small" }),
+    candidate({ executionKey: "parity-auto-model-2-free-large", model: "large", costPer1MTokens: 1 }),
+  ];
+  let dispatchCalls = 0;
+  const deps = {
+    body: { messages: [{ role: "user", content: "implement a small change" }] }, combo,
+    strategy: "auto", config: resolveComboSetupConfig(combo, null), settings: null,
+    allCombos: [combo], apiKeyAllowedConnections: null,
+    log: { info() {}, warn() {}, error() {}, debug() {} },
+    resilienceSettings: resolveResilienceSettings(null), buildAutoCandidates: async () => built as never,
+    handleSingleModelWithTimeout: async () => { dispatchCalls++; throw new Error("RANK_LAB_DISPATCH_BUG"); },
+  } as never;
+  const production = await resolveComboTargetPipeline({ ...deps, readOnlyPlan: true, orderedTargets: targets });
+  const lab = await planAutoRequestWithPipeline({ ...deps, orderedTargets: targets });
+  assert.ok(!("earlyResponse" in production));
+  assert.ok(!("earlyResponse" in lab));
+  if ("earlyResponse" in production || "earlyResponse" in lab) return;
+  assert.deepEqual(lab.orderedTargets.map((target) => target.executionKey), production.orderedTargets.map((target) => target.executionKey));
+  assert.equal(lab.scoringFactors.length, 2, JSON.stringify({ prod: production, lab }));
+  assert.equal(dispatchCalls, 0);
 });
 
 test("the workforce fixture covers all twelve request archetypes", () => {
