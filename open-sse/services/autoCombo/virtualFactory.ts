@@ -1,7 +1,7 @@
 import { AutoComboConfig } from "./engine";
 import { MODE_PACKS } from "./modePacks";
 import { DEFAULT_WEIGHTS, ScoringWeights } from "./scoring";
-import { getCachedProviderConnections } from "@/lib/db/readCache";
+import { getCachedRawProviderConnections } from "@/lib/db/readCache";
 import { getSettings } from "@/lib/db/settings";
 import { getProviderRegistry } from "./providerRegistryAccessor";
 import type { ConnectionFields } from "@/lib/db/encryption";
@@ -604,10 +604,14 @@ export async function prepareVirtualAutoComboInputs(
   skip = false // #9133 — inspector opt-out, see filterResilienceBlockedCandidates
 ): Promise<PreparedVirtualAutoComboInputs> {
   const [rawConnections, rawDisabledNoAuthConnections, settings] = await Promise.all([
-    getCachedProviderConnections({ isActive: true }) as Promise<VirtualFactoryConn[]>,
+    // Use the same raw, ciphertext-preserving connection source as explicit
+    // credential selection. Auto only needs to know whether a credential
+    // representation exists; it must not force lazy decryption for every
+    // connection merely to build a candidate pool.
+    getCachedRawProviderConnections({ isActive: true }) as Promise<VirtualFactoryConn[]>,
     // #6557: synthetic no-auth credentials bypass active filtering, but a real Add Account
     // row may exist; its isActive=false must also gate auto-combo.
-    getCachedProviderConnections({ isActive: false }) as Promise<VirtualFactoryConn[]>,
+    getCachedRawProviderConnections({ isActive: false }) as Promise<VirtualFactoryConn[]>,
     getSettings().catch(() => ({}) as Record<string, unknown>),
   ]);
   const available = (conn: VirtualFactoryConn) =>

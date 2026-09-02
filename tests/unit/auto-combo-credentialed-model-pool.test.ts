@@ -104,6 +104,27 @@ test("credentialed providers expose one logical candidate per visible registry m
   }
 });
 
+test("raw credential representation admits a provider without exposing plaintext to Auto", async () => {
+  const connection = await providersDb.createProviderConnection({
+    provider: "openai",
+    authType: "apikey",
+    name: "Encrypted OpenAI",
+    apiKey: "ciphertext-backed-test-credential",
+  });
+
+  const raw = await providersDb.getRawProviderConnections({
+    provider: "openai",
+    isActive: true,
+  });
+  assert.equal(raw.length, 1);
+  assert.equal(typeof raw[0].apiKey, "string");
+
+  const prepared = await virtualFactory.prepareVirtualAutoComboInputs();
+  const candidate = prepared.regularCandidates.find((entry) => entry.provider === "openai");
+  assert.ok(candidate, "raw credential-backed provider must enter the Auto pool");
+  assert.deepEqual(candidate.allowedConnectionIds, [connection.id]);
+});
+
 test("candidate transparency expands a logical model into per-account rows", async () => {
   const { first, second } = await seedConnections();
 
