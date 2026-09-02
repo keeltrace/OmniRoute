@@ -209,6 +209,7 @@ import {
   isLocalQueueCapacityErrorBody,
   toRecordedTarget,
   getExhaustedTargetSkipReason,
+  advancePastExhaustedTargets,
   clampPercent,
   quotaRemainingPercentFromQuota,
   normalizeConnectionStatus,
@@ -2621,6 +2622,38 @@ async function handleComboChatInner({
 
       for (let i = 0; i < targetCount; i++) {
         if (anySuccess || comboExpired) break;
+
+        const skipPlan = advancePastExhaustedTargets(
+          (autoTargetPlan?.descriptors ?? orderedTargets) as ResolvedComboTarget[],
+          i,
+          exhaustedProviders,
+          exhaustedConnections
+        );
+        if (skipPlan.skippedCount > 0) {
+          for (let skippedIndex = i; skippedIndex < skipPlan.nextIndex; skippedIndex++) {
+            const skippedTarget = (autoTargetPlan?.descriptors ?? orderedTargets)[skippedIndex];
+            if (!skippedTarget) continue;
+            const exhaustedSkip = getExhaustedTargetSkipReason(
+              skippedTarget,
+              exhaustedProviders,
+              exhaustedConnections
+            );
+            if (exhaustedSkip) {
+              log.info("COMBO", exhaustedSkip);
+              recordComboDecision(traceInvocationId, {
+                step: skippedTarget.executionKey,
+                target: skippedTarget.modelStr,
+                decision: "skipped_before_dispatch",
+                reason: exhaustedSkip.includes("connection")
+                  ? "request_exhaustion"
+                  : "provider_exhaustion",
+              });
+              if (skippedIndex > 0) fallbackCount++;
+            }
+          }
+          i = skipPlan.nextIndex;
+          if (i >= targetCount) break;
+        }
 
         const abortController = new AbortController();
         abortControllers.set(i, abortController);

@@ -89,6 +89,28 @@ export function getExhaustedTargetSkipReason(
   return null;
 }
 
+/**
+ * Advance over a contiguous run of targets already known to be unavailable for
+ * this request. This preserves the ordered route and diagnostics at the caller,
+ * while avoiding one async dispatch task per model behind the same exhausted
+ * connection/provider.
+ */
+export function advancePastExhaustedTargets(
+  targets: readonly ResolvedComboTarget[],
+  startIndex: number,
+  exhaustedProviders: ReadonlySet<string>,
+  exhaustedConnections: ReadonlySet<string>
+): { nextIndex: number; skippedCount: number } {
+  let nextIndex = startIndex;
+  while (nextIndex < targets.length) {
+    if (!getExhaustedTargetSkipReason(targets[nextIndex], exhaustedProviders, exhaustedConnections)) {
+      break;
+    }
+    nextIndex += 1;
+  }
+  return { nextIndex, skippedCount: nextIndex - startIndex };
+}
+
 export const MAX_COMBO_DEPTH = 3;
 // Absolute safety ceiling for operator-configured nesting depth. config.maxComboDepth
 // can raise the default (3) up to this cap, or lower it, but never above — runaway

@@ -4,7 +4,10 @@
 // handleRoundRobinCombo). Locks the exact skip conditions + message strings.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { getExhaustedTargetSkipReason } from "../../../open-sse/services/combo/comboPredicates.ts";
+import {
+  advancePastExhaustedTargets,
+  getExhaustedTargetSkipReason,
+} from "../../../open-sse/services/combo/comboPredicates.ts";
 
 function target(overrides: Record<string, unknown> = {}) {
   return {
@@ -70,4 +73,33 @@ test("empty provider string is treated as falsy (no skip)", () => {
     getExhaustedTargetSkipReason(target({ provider: "" }), new Set([""]), new Set([":conn-1"])),
     null
   );
+});
+
+test("advances over a large exhausted-connection run without removing the route tail", () => {
+  const targets = [
+    ...Array.from({ length: 500 }, (_, index) =>
+      target({ executionKey: `a-${index}`, connectionId: "conn-a" })
+    ),
+    target({ executionKey: "b-0", connectionId: "conn-b" }),
+  ];
+
+  const result = advancePastExhaustedTargets(targets, 0, new Set(), new Set(["openai:conn-a"]));
+
+  assert.equal(result.skippedCount, 500);
+  assert.equal(result.nextIndex, 500);
+  assert.equal(targets[result.nextIndex].connectionId, "conn-b");
+  assert.equal(targets.length, 501);
+});
+
+test("does not suppress an independent connection for the same provider", () => {
+  const targets = [
+    target({ executionKey: "a-0", connectionId: "conn-a" }),
+    target({ executionKey: "b-0", connectionId: "conn-b" }),
+  ];
+
+  const result = advancePastExhaustedTargets(targets, 0, new Set(), new Set(["openai:conn-a"]));
+
+  assert.equal(result.nextIndex, 1);
+  assert.equal(targets[result.nextIndex].connectionId, "conn-b");
+  assert.equal(getExhaustedTargetSkipReason(targets[result.nextIndex], new Set(), new Set(["openai:conn-a"])), null);
 });
