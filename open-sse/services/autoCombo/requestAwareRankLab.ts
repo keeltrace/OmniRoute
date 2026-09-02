@@ -58,6 +58,7 @@ export interface ModelUtilityProfile {
   normalizedMarginalCost: number;
   scarcityCost: number;
   currentAutoScore: number | null;
+  observedCurrentRank?: number;
   currentFactors: Record<string, number | null>;
   hardEligible: boolean;
   exclusionReason?: string;
@@ -217,6 +218,8 @@ export function buildModelUtilityProfile(candidate: AutoProviderCandidate, reque
     scarcityCost: tier === "free" ? 0.05 : tier === "subscription" || tier === "included" ? 0.55 : tier === "paid" ? 0.75 : 0.4,
     currentAutoScore: typeof (candidate as unknown as Record<string, unknown>).currentAutoScore === "number"
       ? Number((candidate as unknown as Record<string, unknown>).currentAutoScore) : null,
+    observedCurrentRank: typeof (candidate as unknown as Record<string, unknown>).observedCurrentRank === "number"
+      ? Number((candidate as unknown as Record<string, unknown>).observedCurrentRank) : undefined,
     currentFactors: ((candidate as unknown as Record<string, unknown>).currentFactors as Record<string, number | null> | undefined) ?? {}, hardEligible: true,
   };
 }
@@ -248,7 +251,12 @@ export function rankRequestCandidates(request: RequestProfile, candidates: Model
     const score = scoreRequestUtility(request, model);
     return { ...model, ...score, currentRank: null, awareRank: null, rankDelta: null, whyThisRank: "", whyNotHigher: "", whyNotLower: "" } as RankLabRow;
   });
-  const current = [...evaluated].sort((a, b) => (b.currentAutoScore ?? 0) - (a.currentAutoScore ?? 0) || a.executionKey.localeCompare(b.executionKey));
+  const current = [...evaluated].sort((a, b) => {
+    if (a.currentAutoScore == null && b.currentAutoScore == null && a.observedCurrentRank != null && b.observedCurrentRank != null) {
+      return a.observedCurrentRank - b.observedCurrentRank;
+    }
+    return (b.currentAutoScore ?? 0) - (a.currentAutoScore ?? 0) || a.executionKey.localeCompare(b.executionKey);
+  });
   const aware = [...evaluated].sort((a, b) => Number(b.hardEligible) - Number(a.hardEligible) || Number(a.belowRequirement) - Number(b.belowRequirement) || b.awareScore - a.awareScore || a.executionKey.localeCompare(b.executionKey));
   current.forEach((row, i) => { row.currentRank = i + 1; });
   aware.forEach((row, i) => { row.awareRank = i + 1; });
