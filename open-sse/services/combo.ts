@@ -98,6 +98,7 @@ import { canAffordRequest } from "../../src/lib/quota/quotaScheduler.ts";
 import { resolveConnectionTimeoutMs } from "../handlers/chatCore/upstreamTimeouts.ts";
 import { getCachedProviderConnectionById } from "../../src/lib/db/readCache.ts";
 import { orderTargetsByEvalScores } from "./evalRouting.ts";
+import { finishShadowObservation, startShadowObservation } from "./autoCombo/shadowObservation.ts";
 
 /**
  * Resolve the configured per-connection token budget (rateLimitOverrides.tpm)
@@ -750,6 +751,13 @@ export async function handleComboChat(options: HandleComboChatOptions): Promise<
   const traceInvocationId = options.invocationId ?? createInvocationId();
   const response = await handleComboChatInner({ ...options, invocationId: traceInvocationId });
   response.headers.set("X-OmniRoute-Combo-Trace", traceInvocationId);
+  // Rank Lab is a dark observer only. Completion is best-effort and isolated
+  // from the production response/selection path.
+  try {
+    await finishShadowObservation(traceInvocationId, response.status);
+  } catch {
+    // Shadow observation is fail-open by contract.
+  }
   const trace = getComboTrace(traceInvocationId);
   options.log.info(
     "COMBO",
@@ -973,6 +981,9 @@ async function handleComboChatInner({
     hiddenModelsByProvider,
   });
   if ("earlyResponse" in targetResolution) return targetResolution.earlyResponse;
+  if (strategy === "auto") {
+    startShadowObservation(traceInvocationId, body as Record<string, unknown>, targetResolution);
+  }
   const { stickyWeightedLimit, getWeightedStepKeyForTarget, preScreenMap } = targetResolution;
   const _sticky = targetResolution.sticky;
   let orderedTargets = targetResolution.orderedTargets;

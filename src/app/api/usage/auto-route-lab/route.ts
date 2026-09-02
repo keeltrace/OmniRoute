@@ -23,6 +23,7 @@ import { classifyConnectionBilling } from "@omniroute/open-sse/services/autoComb
 import { resolveModelEconomics } from "@omniroute/open-sse/services/autoCombo/modelEconomics.ts";
 import { getCachedProviderConnections } from "@/lib/db/readCache";
 import { createVirtualAutoCombo } from "@omniroute/open-sse/services/autoCombo/virtualFactory.ts";
+import { getShadowObservations } from "@omniroute/open-sse/services/autoCombo/shadowObservation.ts";
 
 const candidateSchema = z.object({
   executionKey: z.string().min(1), provider: z.string().min(1), model: z.string().min(1),
@@ -190,4 +191,12 @@ export async function POST(request: Request): Promise<Response> {
     topCurrent: result.topCurrent ? sanitize(result.topCurrent) : null, topAware: result.topAware ? sanitize(result.topAware) : null,
     diagnostics: { ...result.diagnostics, dispatches: 0, mutation: false, durationMs: Date.now() - started },
   });
+}
+
+/** Read-only dark-launch receipts. No request body or credential material is stored here. */
+export async function GET(request: Request): Promise<Response> {
+  const authError = await requireManagementAuth(request);
+  if (authError) return authError;
+  const observations = getShadowObservations();
+  return NextResponse.json({ count: observations.length, observations });
 }
