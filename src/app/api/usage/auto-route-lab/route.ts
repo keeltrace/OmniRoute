@@ -20,6 +20,7 @@ import { DEFAULT_WEIGHTS } from "@omniroute/open-sse/services/autoCombo/scoring.
 import { classifyTier } from "@omniroute/open-sse/services/tierResolver.ts";
 import { classifyConnectionBilling } from "@omniroute/open-sse/services/autoCombo/connectionBilling.ts";
 import { getCachedProviderConnections } from "@/lib/db/readCache";
+import { createVirtualAutoCombo } from "@omniroute/open-sse/services/autoCombo/virtualFactory.ts";
 
 const candidateSchema = z.object({
   executionKey: z.string().min(1), provider: z.string().min(1), model: z.string().min(1),
@@ -77,8 +78,13 @@ export async function POST(request: Request): Promise<Response> {
     candidates = parsed.data.candidates.map(toCandidate);
   } else {
     const combos = await getCombos();
-    const combo = combos.find((entry) => entry.name === (parsed.data.comboName ?? "auto"))
+    const requestedCombo = parsed.data.comboName ?? "auto";
+    const persistedCombo = combos.find((entry) => entry.name === requestedCombo)
       ?? combos.find((entry) => entry.strategy === "auto");
+    const builtinName = requestedCombo.replace(/^auto\//, "");
+    const combo = persistedCombo ?? (requestedCombo === "auto" || requestedCombo.startsWith("auto/")
+      ? await createVirtualAutoCombo((builtinName === "auto" ? undefined : builtinName) as never)
+      : undefined);
     if (!combo) return NextResponse.json({ error: "No auto combo is configured" }, { status: 404 });
     const targets = resolveComboTargets(combo, combos);
     const { resetWindowConfig } = parseAutoConfig(combo, targets);
@@ -117,6 +123,8 @@ export async function POST(request: Request): Promise<Response> {
         contextLimit: target ? getModelContextLimitForModelString(target.modelStr) : undefined,
         economicClass: authoritativeEconomicClass,
         economicClassSource: billing.billing === "unknown" ? "unknown connection billing" : `connection billing: ${billing.billing}; model tier: ${tier.tier}`,
+        modelPriceClass: tier.tier === "free" ? "free" : tier.tier === "cheap" ? "paid" : "paid",
+        connectionBillingClass: billing.billing,
       } as unknown as AutoProviderCandidate;
     });
   }
