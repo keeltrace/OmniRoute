@@ -7,7 +7,7 @@
  */
 
 import type { CompressionExclusions } from "../compression/exclusions.ts";
-import type { ProviderCandidate } from "../autoCombo/scoring.ts";
+import type { AutoScorableTarget, ProviderCandidate } from "../autoCombo/scoring.ts";
 import type { PerTargetAdmissionHook } from "../admission/types.ts";
 
 export const RESET_WINDOW_NAMES = ["weekly", "session", "monthly"] as const;
@@ -158,7 +158,8 @@ export type HistoricalLatencyStatsEntry = {
   avgTokensPerSecond?: number;
 };
 
-export type AutoProviderCandidate = ProviderCandidate & {
+/** Scalar route descriptor retained during Auto ordering. */
+export type AutoRouteDescriptor = AutoScorableTarget & {
   stepId: string;
   executionKey: string;
   modelStr: string;
@@ -186,6 +187,10 @@ export type AutoProviderCandidate = ProviderCandidate & {
   /** Diagnostic reason for statusPenalty (the connection testStatus that triggered it). */
   statusPenaltyReason?: string;
 };
+
+/** Backward-compatible name for callers that consume the candidate builder. */
+export type AutoProviderCandidate = ProviderCandidate &
+  Pick<AutoRouteDescriptor, "stepId" | "executionKey" | "modelStr" | "quotaSoftPenalty" | "quotaCutoffBlocked" | "quotaCutoffReason" | "statusPenalty" | "statusPenaltyReason">;
 
 export type ResolvedComboTarget = {
   kind: "model";

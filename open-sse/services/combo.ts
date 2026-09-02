@@ -288,6 +288,7 @@ import {
 } from "./combo/quotaExhaustionCutoff.ts";
 import { expandTargetsByFingerprints } from "./combo/fingerprintExpansion.ts";
 import { resolveComboTargetPipeline } from "./combo/targetResolution.ts";
+import { createLazyAutoTargetPlan, type LazyAutoTargetPlan } from "./combo/lazyAutoTargetPlan.ts";
 import {
   isQuotaExhaustionResponse,
   recordQuotaExhaustionClassification,
@@ -398,6 +399,9 @@ const DEFAULT_MODEL_P95_MS: Record<string, number> = {
 };
 const MIN_HISTORY_SAMPLES = 10;
 const OUTPUT_TOKEN_RATIO = 0.4;
+// Keep provider/account lookups bounded while preserving the complete ordered
+// scalar pool. This is a concurrency bound, not a candidate-count limit.
+const AUTO_CANDIDATE_BUILD_BATCH_SIZE = 32;
 
 function calculateTargetContextAffinity(
   target: ResolvedComboTarget,
@@ -489,8 +493,16 @@ export async function buildAutoCandidates(
     }
   );
 
-  const candidates = await Promise.all(
-    fingerprintExpandedTargets.map(async (target) => {
+  const candidates: AutoProviderCandidate[] = [];
+  for (
+    let offset = 0;
+    offset < fingerprintExpandedTargets.length;
+    offset += AUTO_CANDIDATE_BUILD_BATCH_SIZE
+  ) {
+    const batch = await Promise.all(
+      fingerprintExpandedTargets
+        .slice(offset, offset + AUTO_CANDIDATE_BUILD_BATCH_SIZE)
+        .map(async (target) => {
       const modelStr = target.modelStr;
       const parsed = parseModel(modelStr);
       const provider = target.provider || parsed.provider || parsed.providerAlias || "unknown";
@@ -657,8 +669,10 @@ export async function buildAutoCandidates(
         // before enough samples accumulate — a cold model is never penalized.
         quality: qualityScoreFor(provider, model),
       };
-    })
-  );
+        })
+    );
+    candidates.push(...batch);
+  }
 
   // Filter out candidates whose model is hidden by the user in the dashboard,
   // then drop vendor-retired ids so auto-combo cannot pick them (#11625).
@@ -1001,6 +1015,21 @@ async function handleComboChatInner({
     }
   }
 
+  // Auto ordering has already produced the complete, semantically ordered route.
+  // Retain only compact descriptors while the dispatch loop walks it; concrete
+  // ResolvedComboTarget objects are materialized for the current attempt and
+  // released when that attempt settles. This is deliberately after all existing
+  // filters/scoring/affinity stages, so the route itself is not truncated or
+  // re-ranked.
+  const autoTargetPlan: LazyAutoTargetPlan | null =
+    strategy === "auto" ? createLazyAutoTargetPlan(orderedTargets) : null;
+  const targetCount = autoTargetPlan?.length ?? orderedTargets.length;
+  if (autoTargetPlan) {
+    targetResolution.orderedTargets = [];
+    _sticky.targets = [];
+    orderedTargets = [];
+  }
+
   // #5923 (Finding #4) — reset-window config for the shared per-target quota-
   // exhaustion cutoff below. The "auto" strategy already applies its own cutoff
   // via buildAutoCandidates/routableCandidates, so this only affects the other
@@ -1009,7 +1038,7 @@ async function handleComboChatInner({
   // sequence alongside pool size + exhaustion reasons. Accumulates across set retries.
   const comboAttemptOrder: Array<{ provider: string; model: string }> = [];
 
-  if (orderedTargets.length === 0) {
+  if (targetCount === 0) {
     // Surface a recovery hint + auto-clear the session pin after enough consecutive
     // no-target failures (silent-stop fix). Threshold of 3 prevents a one-off account
     // wipe from destroying the prompt-cache pin benefit on the next request.
@@ -1044,7 +1073,9 @@ async function handleComboChatInner({
 
   // G2: Collect execution keys registered by _registerExecutionCandidates above (auto strategy).
   // We snapshot them now so cleanup can happen after the attempt loop finishes.
-  const _registeredExecutionKeys = orderedTargets.map((t) => t.executionKey).filter(Boolean);
+  const _registeredExecutionKeys = (autoTargetPlan?.descriptors ?? orderedTargets)
+    .map((t) => t.executionKey)
+    .filter(Boolean);
 
   let globalAttempts = 0;
   // #11134: operator-configurable shared attempt budget (clamped to the hard
@@ -1184,7 +1215,7 @@ async function handleComboChatInner({
         terminalReason: string,
         retryAfterSeconds?: number
       ): ComboDiagnostics => ({
-        poolSize: orderedTargets.length,
+        poolSize: targetCount,
         attempted: recordedAttempts,
         excluded: [
           ...[...exhaustedProviders].map((p) => ({ provider: p, reason: "exhausted" })),
@@ -1251,12 +1282,15 @@ async function handleComboChatInner({
       const zeroLatencyOptimizationsEnabled = config.zeroLatencyOptimizationsEnabled === true;
       const hasProtectedPriorityTarget =
         strategy === "priority" &&
-        orderedTargets.some((target) => target.fallbackOnlyOnQuotaExhaustion === true);
+        (autoTargetPlan?.descriptors ?? orderedTargets).some(
+          (target) => target.fallbackOnlyOnQuotaExhaustion === true
+        );
 
       const executeTarget = async (
         i: number
       ): Promise<{ ok: boolean; response?: Response } | null> => {
-        const target = orderedTargets[i];
+        const target = autoTargetPlan?.materialize(i) ?? orderedTargets[i];
+        if (!target) return null;
         const modelStr = target.modelStr;
         const rawModel = parseModel(modelStr).model || modelStr;
         const provider = target.provider;
@@ -1555,7 +1589,7 @@ async function handleComboChatInner({
           ) {
             const cMetrics = getComboMetrics(combo.name);
             if (cMetrics) {
-              const targetKey = orderedTargets[i].executionKey || modelStr;
+              const targetKey = target.executionKey || modelStr;
               const m = cMetrics.byTarget[targetKey] || cMetrics.byModel[modelStr];
               if (shouldSkipForPredictedTtft(m, config.predictiveTtftMs)) {
                 log.warn(
@@ -1612,7 +1646,7 @@ async function handleComboChatInner({
 
           log.info(
             "COMBO",
-            `Trying model ${i + 1}/${orderedTargets.length}: ${modelStr}${retry > 0 ? ` (retry ${retry})` : ""}`
+            `Trying model ${i + 1}/${targetCount}: ${modelStr}${retry > 0 ? ` (retry ${retry})` : ""}`
           );
           emit("combo.target.attempt", {
             comboName: combo.name,
@@ -2169,7 +2203,9 @@ async function handleComboChatInner({
           // let that case fall through, so only short-circuit when every remaining
           // target is the same model (the "retrying will fail identically" premise
           // only holds within a homogeneous same-model pool).
-          const remainingTargets = orderedTargets.slice(i + 1);
+          const remainingTargets = autoTargetPlan
+            ? autoTargetPlan.descriptors.slice(i + 1)
+            : orderedTargets.slice(i + 1);
           const remainderIsHomogeneous = remainingTargets.every(
             (nextInPool) => nextInPool.modelStr === modelStr
           );
@@ -2337,7 +2373,9 @@ async function handleComboChatInner({
           // succeed) — #8376: EXCEPT a proxy-unreachable failure, which poisons every model alike.
           // G-02: when fallbackResult.skipProviderBreaker is set (embedded service supervisor outage
           // signalled via X-Omni-Fallback-Hint: connection_cooldown) apply cooldown only — never trip.
-          const nextTarget = orderedTargets[i + 1];
+          const nextTarget = autoTargetPlan
+            ? autoTargetPlan.descriptors[i + 1]
+            : orderedTargets[i + 1];
           const sameProviderNext =
             typeof nextTarget?.provider === "string" && nextTarget.provider === provider;
           if (
@@ -2581,7 +2619,7 @@ async function handleComboChatInner({
         return null;
       };
 
-      for (let i = 0; i < orderedTargets.length; i++) {
+      for (let i = 0; i < targetCount; i++) {
         if (anySuccess || comboExpired) break;
 
         const abortController = new AbortController();
@@ -2591,6 +2629,7 @@ async function handleComboChatInner({
 
         const task = (async () => {
           try {
+            autoTargetPlan?.markAttempt(i);
             const res = await executeTarget(i);
             if (res && !anySuccess) {
               if (res.ok) {
@@ -2606,6 +2645,7 @@ async function handleComboChatInner({
               }
             }
           } finally {
+            autoTargetPlan?.release(i);
             signal?.removeEventListener("abort", onClientAbort);
           }
         })().catch((err) => {
@@ -2629,7 +2669,7 @@ async function handleComboChatInner({
           zeroLatencyOptimizationsEnabled &&
           config.hedging &&
           !hasProtectedPriorityTarget &&
-          i + 1 < orderedTargets.length
+          i + 1 < targetCount
         ) {
           const hedgeDelay = resolveDelayMs(config.hedgeDelayMs, 500);
           let timeoutResolve: () => void;
@@ -2650,7 +2690,7 @@ async function handleComboChatInner({
           log.info(
             "COMBO",
             `Combo global timeout (${comboTimeoutMs}ms) reached after ` +
-              `${i + 1}/${orderedTargets.length} targets (${recordedAttempts} attempted) — stopping`
+          `${i + 1}/${targetCount} targets (${recordedAttempts} attempted) — stopping`
           );
         }
       }
@@ -2678,7 +2718,7 @@ async function handleComboChatInner({
           .map((e) => `${e.model} (${e.status})`)
           .join(", ");
         const msg =
-          `Combo global timeout (${loopSafetyMs}ms) after ${recordedAttempts}/${orderedTargets.length} targets` +
+          `Combo global timeout (${loopSafetyMs}ms) after ${recordedAttempts}/${targetCount} targets` +
           (comboErrors.length > 0
             ? ` | tried: ${summary}${comboErrors.length > 5 ? `... (+${comboErrors.length - 5})` : ""}`
             : "") +
@@ -2690,7 +2730,10 @@ async function handleComboChatInner({
       }
 
       // #10681: finalize the decision trace (success).
-      finalizeComboTrace(traceInvocationId, orderedTargets);
+      finalizeComboTrace(
+        traceInvocationId,
+        (autoTargetPlan?.descriptors ?? orderedTargets) as ResolvedComboTarget[]
+      );
       finishComboTrace(traceInvocationId, { status: 200 });
       if (anySuccess) {
         // G1: clear the safety timer on the happy path so a successful combo does
@@ -2703,13 +2746,16 @@ async function handleComboChatInner({
       }
 
       // #10681: finalize the decision trace (global timeout).
-      finalizeComboTrace(traceInvocationId, orderedTargets);
+      finalizeComboTrace(
+        traceInvocationId,
+        (autoTargetPlan?.descriptors ?? orderedTargets) as ResolvedComboTarget[]
+      );
       finishComboTrace(traceInvocationId, { status: 504 });
       // Global combo timeout: return aggregated error immediately, skipping set retries.
       if (comboExpired) {
         const summary = buildRedactedSummary(comboErrors);
         const msg =
-          `Combo global timeout (${comboTimeoutMs}ms) after ${recordedAttempts}/${orderedTargets.length} targets` +
+          `Combo global timeout (${comboTimeoutMs}ms) after ${recordedAttempts}/${targetCount} targets` +
           (comboErrors.length > 0 ? ` | tried: ${summary}` : "");
         const latencyMs = Date.now() - startTime;
         if (recordedAttempts === 0) {
@@ -2748,7 +2794,10 @@ async function handleComboChatInner({
 
       // All set retries exhausted — return the final error
       // #10681: finalize the decision trace (all targets failed or skipped).
-      finalizeComboTrace(traceInvocationId, orderedTargets);
+      finalizeComboTrace(
+        traceInvocationId,
+        (autoTargetPlan?.descriptors ?? orderedTargets) as ResolvedComboTarget[]
+      );
       finishComboTrace(traceInvocationId, { status: 503 });
       if (!lastStatus) {
         if (recordedAttempts === 0) {
@@ -2813,7 +2862,7 @@ async function handleComboChatInner({
       // so the real reason is always available.
       if (comboCooldownWaitEnabled && earliestRetryAfter) {
         const decision: ResolveComboCooldownDecisionResult = resolveComboCooldownWaitDecision({
-          targets: orderedTargets,
+          targets: (autoTargetPlan?.descriptors ?? orderedTargets) as ResolvedComboTarget[],
           earliestRetryAfter,
           attempt: comboCooldownAttempt,
           budgetLeftMs: comboCooldownBudgetLeftMs,
@@ -2851,7 +2900,10 @@ async function handleComboChatInner({
       }
 
       // #10681: finalize the decision trace with the aggregated terminal status.
-      finalizeComboTrace(traceInvocationId, orderedTargets);
+      finalizeComboTrace(
+        traceInvocationId,
+        (autoTargetPlan?.descriptors ?? orderedTargets) as ResolvedComboTarget[]
+      );
       finishComboTrace(traceInvocationId, { status });
       // Retry-after decoration is separate from the wait decision above: only
       // rate-limit-class final statuses may carry a `(reset after ...)` suffix
@@ -2907,7 +2959,7 @@ async function handleComboChatInner({
       return errorResponseWithComboDiagnostics(
         503,
         "Combo routing completed without an upstream response",
-        buildNoUpstreamResponseDiagnostics(orderedTargets.length)
+        buildNoUpstreamResponseDiagnostics(targetCount)
       );
     } finally {
       // #11804: always release the loop-safety timer. Covering every exit path by

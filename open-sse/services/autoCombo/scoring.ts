@@ -105,7 +105,12 @@ export function normalizeScoringWeights(
   ) as unknown as ScoringWeights;
 }
 
-export interface ProviderCandidate {
+/**
+ * Scalar-only contract consumed by the scorer.  This is intentionally free of
+ * route objects, connection rows, credentials, request bodies, and provider
+ * wrappers so Auto can score a large universe without retaining those graphs.
+ */
+export interface AutoScorableTarget {
   provider: string;
   model: string;
   quotaRemaining: number; // percentage 0..100
@@ -143,6 +148,8 @@ export interface ProviderCandidate {
   connectionPoolSize?: number;
   connectionId?: string;
 }
+
+export interface ProviderCandidate extends AutoScorableTarget {}
 
 export interface ScoredProvider {
   provider: string;
@@ -261,7 +268,7 @@ export interface PoolMaxima {
   maxStdDev: number;
 }
 
-export function computePoolMaxima(pool: ProviderCandidate[]): PoolMaxima {
+export function computePoolMaxima(pool: AutoScorableTarget[]): PoolMaxima {
   let maxCost = 0.001;
   let maxLatency = 1;
   let maxStdDev = 0.001;
@@ -285,8 +292,8 @@ function boundedRate(value: number | null | undefined): number {
 }
 
 export function calculateFactors(
-  candidate: ProviderCandidate,
-  pool: ProviderCandidate[],
+  candidate: AutoScorableTarget,
+  pool: AutoScorableTarget[],
   taskType: string,
   getTaskFitness: (model: string, taskType: string) => number,
   manifestHint?: RoutingHint | null,
@@ -332,7 +339,7 @@ export function calculateFactors(
 }
 
 export function scorePool(
-  pool: ProviderCandidate[],
+  pool: AutoScorableTarget[],
   taskType: string,
   weights: ScoringWeights = DEFAULT_WEIGHTS,
   getTaskFitness: (model: string, taskType: string) => number = () => 0.5,
