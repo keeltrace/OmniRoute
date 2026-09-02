@@ -1,0 +1,10 @@
+{
+  "messages": [{"role": "user", "content": "Implement a normal coding task with clear instructions."}],
+  "roleHint": "worker",
+  "max_tokens": 4096,
+  "candidates": [
+    {"executionKey":"free/capable","provider":"free","model":"capable-coder","connectionId":"fixture-free","economicClass":"free","toolCalling":true,"contextLimit":200000,"maxOutputTokens":16000,"quality":0.82,"reasoningCapability":0.72,"currentAutoScore":0.60,"costPer1MTokens":0},
+    {"executionKey":"subscription/frontier","provider":"subscription","model":"frontier-coder","connectionId":"fixture-subscription","economicClass":"subscription","toolCalling":true,"contextLimit":200000,"maxOutputTokens":64000,"quality":0.98,"reasoningCapability":0.98,"currentAutoScore":0.90,"costPer1MTokens":1},
+    {"executionKey":"paid/specialist","provider":"paid","model":"specialist-coder","connectionId":"fixture-paid","economicClass":"paid","toolCalling":true,"contextLimit":128000,"maxOutputTokens":32000,"quality":0.94,"reasoningCapability":0.90,"currentAutoScore":0.70,"costPer1MTokens":2}
+  ]
+}
