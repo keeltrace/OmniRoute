@@ -12,7 +12,7 @@ import {
 } from "@omniroute/open-sse/services/autoCombo/requestAwareRankLab.ts";
 import type { AutoProviderCandidate } from "@omniroute/open-sse/services/combo/types.ts";
 import { buildAutoCandidates } from "@omniroute/open-sse/services/combo.ts";
-import { evaluateAutoCandidates } from "@omniroute/open-sse/services/combo/resolveAutoStrategy.ts";
+import { planAutoRequest } from "@omniroute/open-sse/services/combo/resolveAutoStrategy.ts";
 import { parseAutoConfig } from "@omniroute/open-sse/services/combo/autoConfig.ts";
 import { resolveComboTargets, getModelContextLimitForModelString } from "@omniroute/open-sse/services/combo/comboStructure.ts";
 import { supportsToolCalling } from "@omniroute/open-sse/services/modelCapabilities.ts";
@@ -82,11 +82,11 @@ export async function POST(request: Request): Promise<Response> {
     if (!combo) return NextResponse.json({ error: "No auto combo is configured" }, { status: 404 });
     const targets = resolveComboTargets(combo, combos);
     const { resetWindowConfig } = parseAutoConfig(combo, targets);
-    const evaluation = await evaluateAutoCandidates({
+    const evaluation = await planAutoRequest({
       targets, comboName: combo.name, body, taskType: "coding", weights: DEFAULT_WEIGHTS,
       resetWindowConfig, buildAutoCandidates,
     });
-    const scores = new Map(evaluation.scoredTargets.map((entry) => [entry.target.executionKey, entry.score]));
+    const scores = new Map(evaluation.scoringFactors.map((entry) => [entry.executionKey, entry]));
     const targetByKey = new Map(targets.map((target) => [target.executionKey, target]));
     const connectionRows = await getCachedProviderConnections({ isActive: true });
     const connectionById = new Map(connectionRows.map((row) => {
@@ -111,7 +111,8 @@ export async function POST(request: Request): Promise<Response> {
             : tier.tier === "free" ? "free" : "paid";
       return {
         ...candidate,
-        currentAutoScore: scores.get(candidate.executionKey),
+        currentAutoScore: scores.get(candidate.executionKey)?.score,
+        currentFactors: scores.get(candidate.executionKey)?.factors,
         toolCalling: target ? supportsToolCalling(target.modelStr) : undefined,
         contextLimit: target ? getModelContextLimitForModelString(target.modelStr) : undefined,
         economicClass: authoritativeEconomicClass,

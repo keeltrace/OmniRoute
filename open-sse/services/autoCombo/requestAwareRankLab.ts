@@ -54,6 +54,8 @@ export interface ModelUtilityProfile {
   stability: number | null;
   economicClass: EconomicClass;
   economicClassSource: string;
+  modelPriceClass: EconomicClass;
+  connectionBillingClass: string;
   factorSources: Record<string, string>;
   normalizedMarginalCost: number;
   scarcityCost: number;
@@ -69,6 +71,12 @@ export interface RequestAwareScore {
   scarcityPenalty: number;
   moneyPenalty: number;
   awareScore: number;
+  minimumExpectedUtility: number;
+  utilityMargin: number;
+  taskSuccessEstimate: number;
+  marginalIntelligenceGain: number;
+  bestSufficientLowerScarcityCandidate?: string;
+  bestSufficientLowerScarcityUtility?: number;
   belowRequirement: boolean;
   factors: Record<string, number>;
   reasons: string[];
@@ -81,6 +89,7 @@ export interface RankLabRow extends ModelUtilityProfile, RequestAwareScore {
   whyThisRank: string;
   whyNotHigher: string;
   whyNotLower: string;
+  counterfactuals?: Record<string, { rank: number | null; score: number }>;
 }
 
 export interface RankLabResult {
@@ -116,7 +125,6 @@ const knownOr = (v: number | null | undefined, fallback: number): number => v ==
 const textOf = (messages: unknown): string => Array.isArray(messages)
   ? messages.map((m) => typeof m === "object" && m !== null ? String((m as Record<string, unknown>).content ?? "") : String(m ?? "")).join("\n")
   : "";
-const bool = (value: unknown): boolean => value === true;
 
 function inferTasks(text: string, requiresTools: boolean): RankLabTask[] {
   const t = text.toLowerCase();
@@ -213,6 +221,8 @@ export function buildModelUtilityProfile(candidate: AutoProviderCandidate, reque
     quota: clamp(Number(candidate.quotaRemaining) / 100), latencyFit: clamp(1 - Number(candidate.p95LatencyMs ?? 1000) / 2000),
     stability: Number.isFinite(Number(candidate.latencyStdDev)) ? clamp(1 - Number(candidate.latencyStdDev) / 1000) : null,
     economicClass: tier, economicClassSource: String((candidate as unknown as Record<string, unknown>).economicClassSource ?? (tier === "unknown" ? "unknown" : "candidate pricing/tier metadata")),
+    modelPriceClass: ((candidate as unknown as Record<string, unknown>).modelPriceClass as EconomicClass | undefined) ?? (Number.isFinite(cost) && cost === 0 ? "free" : "unknown"),
+    connectionBillingClass: String((candidate as unknown as Record<string, unknown>).connectionBillingClass ?? "unknown"),
     factorSources: { taskFit: "taskFitness/model metadata", reasoningCapability: "model metadata or neutral", toolCapability: "model capabilities", contextLimit: "model capabilities", quality: "routing telemetry or neutral", reliability: "failure telemetry or neutral", health: "breaker state", quota: "quota state", latencyFit: "latency telemetry or neutral" },
     normalizedMarginalCost: clamp((Number.isFinite(cost) ? cost : 1) / 10),
     scarcityCost: tier === "free" ? 0.05 : tier === "subscription" || tier === "included" ? 0.55 : tier === "paid" ? 0.75 : 0.4,
@@ -236,14 +246,25 @@ export function scoreRequestUtility(request: RequestProfile, model: ModelUtility
   const scarcityPenalty = SCARCITY_WEIGHT[request.role] * model.scarcityCost * overqualification;
   const moneyPenalty = MONEY_WEIGHT[request.role] * model.normalizedMarginalCost;
   const awareScore = rawUtility - scarcityPenalty - moneyPenalty;
+  const utilityMargin = rawUtility - request.minimumExpectedUtility;
   const reasons = [`${request.role} request`, `raw utility ${rawUtility.toFixed(3)}`, model.economicClass, model.hardEligible ? "eligible" : model.exclusionReason ?? "excluded"];
   if (request.requiresTools && model.toolCapability !== true) reasons.push("tools unsupported");
   if (model.contextLimit != null && model.contextLimit < request.contextTokensRequired) reasons.push("insufficient context");
   if (overqualification > 0) reasons.push(`overqualification penalty ${scarcityPenalty.toFixed(3)}`);
-  return { rawUtility, scarcityPenalty, moneyPenalty, awareScore, belowRequirement: rawUtility < request.minimumExpectedUtility, factors, reasons };
+  return { rawUtility, scarcityPenalty, moneyPenalty, awareScore, minimumExpectedUtility: request.minimumExpectedUtility, utilityMargin, taskSuccessEstimate: clamp(rawUtility), marginalIntelligenceGain: 0, belowRequirement: rawUtility < request.minimumExpectedUtility, factors, reasons };
 }
 
-export function rankRequestCandidates(request: RequestProfile, candidates: ModelUtilityProfile[]): RankLabResult {
+export interface CounterfactualChange { role?: WorkforceRole; reasoningDelta?: number; minimumDelta?: number; economicPenaltyZero?: boolean; scarcityPenaltyZero?: boolean; reliabilityDelta?: number; taskFitDelta?: number; }
+
+export function counterfactualRank(request: RequestProfile, candidates: ModelUtilityProfile[], executionKey: string, change: CounterfactualChange) {
+  const changedRequest = { ...request, role: change.role ?? request.role, reasoningNeed: clamp(request.reasoningNeed + (change.reasoningDelta ?? 0)), minimumExpectedUtility: clamp(request.minimumExpectedUtility + (change.minimumDelta ?? 0)) };
+  const changed = candidates.map((candidate) => candidate.executionKey === executionKey ? { ...candidate, taskFit: clamp(candidate.taskFit + (change.taskFitDelta ?? 0)), reliability: candidate.reliability == null ? candidate.reliability : clamp(candidate.reliability + (change.reliabilityDelta ?? 0)), normalizedMarginalCost: change.economicPenaltyZero ? 0 : candidate.normalizedMarginalCost, scarcityCost: change.scarcityPenaltyZero ? 0 : candidate.scarcityCost } : candidate);
+  const result = rankRequestCandidates(changedRequest, changed, false);
+  const row = result.awareRanking.find((candidate) => candidate.executionKey === executionKey);
+  return { rank: row?.awareRank ?? null, score: row?.awareScore ?? 0 };
+}
+
+export function rankRequestCandidates(request: RequestProfile, candidates: ModelUtilityProfile[], includeCounterfactuals = true): RankLabResult {
   const started = Date.now();
   const evaluated = candidates.map((candidate) => {
     const hardReason = request.requiresTools && candidate.toolCapability !== true ? "tools unsupported" : request.requiresVision && candidate.visionCapability !== true ? "vision unsupported" : candidate.contextLimit != null && candidate.contextLimit < request.contextTokensRequired ? "insufficient context" : undefined;
@@ -251,6 +272,14 @@ export function rankRequestCandidates(request: RequestProfile, candidates: Model
     const score = scoreRequestUtility(request, model);
     return { ...model, ...score, currentRank: null, awareRank: null, rankDelta: null, whyThisRank: "", whyNotHigher: "", whyNotLower: "" } as RankLabRow;
   });
+  const sufficient = evaluated.filter((row) => row.hardEligible && !row.belowRequirement);
+  for (const row of evaluated) {
+    const cheaper = sufficient.filter((other) => other.executionKey !== row.executionKey && (other.scarcityCost < row.scarcityCost || other.normalizedMarginalCost < row.normalizedMarginalCost));
+    const best = cheaper.sort((a, b) => b.rawUtility - a.rawUtility)[0];
+    row.marginalIntelligenceGain = best ? Math.max(0, row.rawUtility - best.rawUtility) : 0;
+    row.bestSufficientLowerScarcityCandidate = best?.executionKey;
+    row.bestSufficientLowerScarcityUtility = best?.rawUtility;
+  }
   const current = [...evaluated].sort((a, b) => {
     if (a.currentAutoScore == null && b.currentAutoScore == null && a.observedCurrentRank != null && b.observedCurrentRank != null) {
       return a.observedCurrentRank - b.observedCurrentRank;
@@ -270,6 +299,19 @@ export function rankRequestCandidates(request: RequestProfile, candidates: Model
   }
   const topCurrent = current[0] ?? null;
   const topAware = aware[0] ?? null;
+  const notable = includeCounterfactuals ? [topCurrent, topAware, ...evaluated.filter((row) => /solar|codex|gpt-oss|opencode|claude/i.test(`${row.provider}/${row.model}`)).slice(0, 24)] : [];
+  for (const row of notable) if (row) {
+    row.counterfactuals = {
+      orchestrator: counterfactualRank(request, candidates, row.executionKey, { role: "orchestrator" }),
+      specialist: counterfactualRank(request, candidates, row.executionKey, { role: "specialist" }),
+      reasoningPlus02: counterfactualRank(request, candidates, row.executionKey, { reasoningDelta: 0.2 }),
+      minimumPlus01: counterfactualRank(request, candidates, row.executionKey, { minimumDelta: 0.1 }),
+      noEconomicPenalty: counterfactualRank(request, candidates, row.executionKey, { economicPenaltyZero: true }),
+      noScarcityPenalty: counterfactualRank(request, candidates, row.executionKey, { scarcityPenaltyZero: true }),
+      reliabilityPlus01: counterfactualRank(request, candidates, row.executionKey, { reliabilityDelta: 0.1 }),
+      taskFitPlus01: counterfactualRank(request, candidates, row.executionKey, { taskFitDelta: 0.1 }),
+    };
+  }
   const rankingDiff = [...current].sort((a, b) => Math.abs(b.rankDelta ?? 0) - Math.abs(a.rankDelta ?? 0) || a.executionKey.localeCompare(b.executionKey));
   const biggestRisers = rankingDiff.filter((row) => (row.rankDelta ?? 0) > 0).slice(0, 10);
   const biggestFallers = rankingDiff.filter((row) => (row.rankDelta ?? 0) < 0).slice(0, 10);

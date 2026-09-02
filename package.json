@@ -98,6 +98,7 @@
     "eval:router:search": "node --import tsx scripts/router-eval/search.ts",
     "eval:router:trends": "node --import tsx scripts/router-eval/trends.ts",
     "rank-lab": "node --import tsx scripts/rank-lab.ts",
+    "rank-lab:workforce": "node --import tsx scripts/rank-lab-workforce.ts",
     "release:sync-changelog-i18n": "node scripts/release/sync-changelog-i18n.mjs",
     "prebuild": "npm run check:native-deps",
     "build": "node scripts/build/build-next-isolated.mjs",

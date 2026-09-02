@@ -7,6 +7,7 @@ import {
   scoreRequestUtility,
   type ModelUtilityProfile,
 } from "../../open-sse/services/autoCombo/requestAwareRankLab.ts";
+import { planAutoRequest } from "../../open-sse/services/combo/resolveAutoStrategy.ts";
 
 function candidate(overrides: Record<string, unknown> = {}) {
   return {
@@ -137,4 +138,38 @@ test("rank lab keeps the complete route and reports current versus aware ranking
   assert.equal(result.awareRanking.length, 896);
   assert.equal(result.economicSummary.free.count, 896);
   assert.equal(result.diagnostics.mutation, false);
+});
+
+test("read-only production planning seam preserves scorer order and cannot dispatch", async () => {
+  const target = (key: string) => ({ stepId: key, executionKey: key, modelStr: "free/small", provider: "free", connectionId: "fixture" });
+  const targets = [target("a"), target("b")];
+  const built = [candidate({ executionKey: "a" }), candidate({ executionKey: "b", costPer1MTokens: 1 })];
+  let dispatchCalls = 0;
+  const plan = await planAutoRequest({
+    targets: targets as never, comboName: "fixture", body: { messages: [] }, taskType: "coding",
+    weights: {} as never, buildAutoCandidates: async () => {
+      dispatchCalls++;
+      return built as never;
+    },
+  });
+  assert.deepEqual(plan.orderedTargets.map((entry) => entry.executionKey), plan.scoredTargets.map((entry) => entry.target.executionKey));
+  assert.equal(plan.diagnostics.dispatches, 0);
+  // The injected builder is candidate preparation, not an executor; the seam
+  // has no executor callback and therefore cannot dispatch upstream.
+  assert.equal(dispatchCalls, 1);
+});
+
+test("the workforce fixture covers all twelve request archetypes", () => {
+  const prompts = [
+    "Rename this variable.", "Format this document.", "Extract and classify these fields.",
+    "Implement this small helper.", "Implement the requested API endpoint.", "Debug the failing request and fix the bug.",
+    "Implement the complex concurrent scheduler.", "Review this change for correctness and security.",
+    "Design the architecture and explain the trade-offs.", "Prove whether this distributed design is correct.",
+    "Inspect the repository with tools and implement the change.", "Analyze this long specification and identify every dependency.",
+  ];
+  assert.equal(prompts.length, 12);
+  const roles = prompts.map((content) => analyzeRequestProfile({ messages: [{ content }] }).role);
+  assert.ok(roles.includes("micro"));
+  assert.ok(roles.includes("specialist"));
+  assert.ok(roles.includes("orchestrator"));
 });

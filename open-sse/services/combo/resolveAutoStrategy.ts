@@ -133,6 +133,30 @@ export async function evaluateAutoCandidates(options: EvaluateAutoCandidatesOpti
 }
 
 /**
+ * Read-only planning boundary shared by inspectors and the Auto strategy.
+ * It intentionally accepts no executor/provider client and stops after the
+ * production candidate scorer has produced its ordered plan.
+ */
+export async function planAutoRequest(options: EvaluateAutoCandidatesOptions) {
+  const evaluation = await evaluateAutoCandidates(options);
+  return {
+    ...evaluation,
+    orderedTargets: evaluation.scoredTargets.map((entry) => entry.target),
+    scoringFactors: evaluation.scoredTargets.map((entry) => ({
+      executionKey: entry.target.executionKey,
+      score: entry.score,
+      factors: entry.factors,
+    })),
+    diagnostics: {
+      dispatches: 0,
+      mutation: false,
+      candidateCount: evaluation.sourceCandidates.length,
+      compatibleCount: evaluation.routableCandidates.length,
+    },
+  };
+}
+
+/**
  * Resolve target ordering for the `auto` combo strategy.
  *
  * Extracted verbatim from `handleComboChat`'s `if (strategy === "auto")` branch:
