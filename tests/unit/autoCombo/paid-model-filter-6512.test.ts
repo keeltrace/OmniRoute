@@ -15,6 +15,7 @@ import { setTierConfig } from "../../../open-sse/services/tierResolver.ts";
 // `openai/gpt-4o` is paid (openai has no documented free models).
 const FREE = { provider: "agentrouter", model: "claude-opus-4-8" };
 const PAID = { provider: "openai", model: "gpt-4o" };
+const NOUS_ALWAYS_FREE = { provider: "nous-research", model: "Hermes-4-405B" };
 
 test("hidePaidModels OFF (default) returns the pool UNCHANGED (identity, regression guard)", () => {
   const pool = [FREE, PAID];
@@ -30,6 +31,10 @@ test("hidePaidModels ON drops the paid-only backend, keeps the free one", () => 
     [FREE],
     "openai/gpt-4o (paid) must be excluded; agentrouter/claude-opus-4-8 (free) kept"
   );
+});
+
+test("hidePaidModels keeps Nous models from the always-free provider policy", () => {
+  assert.deepEqual(filterPaidOnlyCandidates([NOUS_ALWAYS_FREE, PAID], true), [NOUS_ALWAYS_FREE]);
 });
 
 test("hidePaidModels ON with an all-paid pool degrades to an empty pool", () => {
