@@ -16,12 +16,9 @@
  * lives in `freeAccessQuota.ts` and is injected here as a plain function —
  * this file never imports the DB or makes a network call itself.
  *
- * No provider or model name appears anywhere in this file. A candidate passes
- * or fails purely on the metadata it carries (`freeType`, `tos`,
- * `hardStopGuaranteed`) plus, for quota-based types, a `FreeAccessState`
- * resolved elsewhere. A future provider that ships correct metadata is
- * handled automatically; one that doesn't is excluded automatically — see
- * `docs/routing/STRICT_ZERO_COST.md`.
+ * Provider-specific entitlement semantics are delegated to the free-mesh
+ * policy layer. Runtime health and quota state remain separate from economic
+ * classification, so a temporary 401/429/5xx never silently becomes "paid".
  *
  * ## Connection safety (fixed after code review, see `docs/routing/STRICT_ZERO_COST.md`)
  *
@@ -53,6 +50,7 @@ import {
   type FreeModelBudget,
 } from "@omniroute/open-sse/config/freeModelCatalog.ts";
 import { SYNTHETIC_NOAUTH_CONNECTION_ID } from "./resilienceCandidateFilter";
+import { isProviderAlwaysFree } from "../freeMesh/policy";
 
 /** Types whose allowance needs no runtime verification: no credential exists
  * for the candidate at all, so no request against it can ever be billed. */
@@ -137,9 +135,10 @@ function candidateConnectionIds(candidate: StrictZeroCostCandidate): string[] {
   return candidate.connectionId ? [candidate.connectionId] : (candidate.allowedConnectionIds ?? []);
 }
 
-/** Nous Portal rotates price-locked free variants independently of releases. */
-function isNousPortalFreeVariant(candidate: StrictZeroCostCandidate): boolean {
-  return candidate.provider === "nous-research" && candidate.model.toLowerCase().endsWith(":free");
+function realCandidateConnectionIds(candidate: StrictZeroCostCandidate): string[] {
+  return candidateConnectionIds(candidate).filter(
+    (connectionId) => connectionId !== SYNTHETIC_NOAUTH_CONNECTION_ID
+  );
 }
 
 function isConnectionStateSafe(
@@ -169,6 +168,8 @@ function isConnectionStateSafe(
  * and it's a synchronous cache read (see `StrictZeroCostOptions` above).
  *
  * Returns the list of connection ids proven SAFE right now:
+ *   - real credential ids for providers whose operator policy establishes an
+ *     always-free entitlement; quota proof is intentionally not required.
  *   - `[SYNTHETIC_NOAUTH_CONNECTION_ID]` for a genuine no-auth candidate whose
  *     catalog entry is `keyless` — no live check needed or possible.
  *   - a (possibly empty) subset of the candidate's real connection id(s) for
@@ -181,10 +182,8 @@ export function evaluateCandidateConnections(
   resolveFreeAccessState: StrictZeroCostOptions["resolveFreeAccessState"],
   options: Pick<StrictZeroCostOptions, "minRemainingAllowance" | "maxStateAgeMs" | "now">
 ): string[] {
-  if (isNousPortalFreeVariant(candidate)) {
-    return candidateConnectionIds(candidate).filter(
-      (connectionId) => connectionId !== SYNTHETIC_NOAUTH_CONNECTION_ID
-    );
+  if (isProviderAlwaysFree(candidate.provider)) {
+    return realCandidateConnectionIds(candidate);
   }
 
   if (!budgetEntry) return []; // not in the catalog at all → paid, or genuinely unknown
