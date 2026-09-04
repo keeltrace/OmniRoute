@@ -126,6 +126,15 @@ function buildBaseOptions(a: PreludeBaseOptionArgs): HandleComboChatOptions {
 const TERMINAL_PIN_STATUSES = new Set(["credits_exhausted", "banned", "expired"]);
 
 /**
+ * Pinned-model failures that should re-enter the normal combo fallback loop.
+ * Kept pure so auth fallback semantics remain regression-testable without
+ * invoking a provider or the dashboard.
+ */
+export function shouldFallbackPinnedStatus(status: number): boolean {
+  return status === 401 || [408, 429, 500, 502, 503, 504].includes(status);
+}
+
+/**
  * Pure decision: should a context-cache pin be DROPPED because its provider has
  * DURABLY fallen? A ccp pin keeps the prompt cache warm by bypassing the combo
  * strategy — but if the pinned provider is dead (credits exhausted / banned /
@@ -247,7 +256,19 @@ async function evaluatePinnedResponse(args: {
     return null;
   }
   const pinnedStatus = pinnedResult.status || 500;
-  if (![408, 429, 500, 502, 503, 504].includes(pinnedStatus)) {
+  // Authentication failure is connection-scoped.  A pinned target is only a
+  // continuity hint; it must not turn a single connection's 401 into a
+  // request-terminal response and bypass the combo fallback tail.  The normal
+  // combo loop will observe the selected connection, record its auth
+  // exhaustion, and continue with sibling targets/providers.
+  if (pinnedStatus === 401) {
+    log.warn(
+      "COMBO",
+      `Pinned model ${pinnedModel} returned 401, falling through to combo retry/fallback`
+    );
+    return null;
+  }
+  if (!shouldFallbackPinnedStatus(pinnedStatus)) {
     return pinnedResult;
   }
   log.warn(
