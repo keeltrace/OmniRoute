@@ -4444,11 +4444,20 @@ export async function handleChatCore({
             } // close probeIsolated3 else
           }
         } else if (errorType === PROVIDER_ERROR_TYPES.UNAUTHORIZED) {
-          // Normal 401 (token/session auth issue): keep account active for refresh/re-auth.
+          // API-key connections cannot recover from an invalid key during this
+          // request.  Mark only this connection unavailable so combo routing
+          // skips its sibling models and continues to other accounts/providers.
+          // OAuth/session connections remain active for their refresh path.
+          const apiKeyOnly =
+            typeof credentials?.apiKey === "string" &&
+            credentials.apiKey.length > 0 &&
+            !credentials.accessToken &&
+            !credentials.refreshToken;
           await updateProviderConnection(errorConnectionId, {
             lastErrorType: errorType,
             lastError: persistentMessage,
             errorCode: statusCode,
+            ...(apiKeyOnly ? { testStatus: "unavailable" as const } : {}),
           });
         } else if (errorType === PROVIDER_ERROR_TYPES.OAUTH_INVALID_TOKEN) {
           // OAuth 401 with invalid credentials - token refresh can recover
