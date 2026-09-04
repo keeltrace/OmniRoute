@@ -11,6 +11,7 @@
 
 export {
   isClientAbortError,
+  isRecoverableUpstreamTransportError,
   shouldSwallowUncaught,
   attachRequestStreamGuards,
   installProcessCrashGuard,

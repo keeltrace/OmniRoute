@@ -64,6 +64,35 @@ export function isClientAbortError(err) {
 }
 
 /**
+ * True for an upstream transport failure that escaped a request-local promise
+ * chain.  It is not a programming error: the chat handler has already mapped
+ * this class to a retry / connection cooldown / next-route decision.  Letting
+ * the process-level guard rethrow it turns one provider timeout into a router
+ * outage, which violates the control-plane availability contract.
+ *
+ * Keep this deliberately narrow.  HTTP status errors, credential errors and
+ * arbitrary TypeErrors remain observable failures; only socket/connect errors
+ * emitted by Undici/fetch are absorbed at this final process boundary.
+ *
+ * @param {unknown} err
+ * @returns {boolean}
+ */
+export function isRecoverableUpstreamTransportError(err) {
+  if (!err || typeof err !== "object") return false;
+  const e = /** @type {NodeJS.ErrnoException & { cause?: unknown }} */ (err);
+  const cause = e.cause && typeof e.cause === "object" ? e.cause : null;
+  const causeCode = cause && "code" in cause ? String(cause.code ?? "") : "";
+  const code = String(e.code ?? "");
+  const message = String(e.message ?? "");
+  return (
+    message === "fetch failed" &&
+    ["UND_ERR_CONNECT_TIMEOUT", "UND_ERR_SOCKET", "ECONNRESET", "ETIMEDOUT", "EAI_AGAIN", "ENETUNREACH"].includes(
+      causeCode || code
+    )
+  );
+}
+
+/**
  * Decide whether a process-level uncaughtException/unhandledRejection should be
  * swallowed (benign client-abort) or allowed to surface (genuine bug).
  *
@@ -75,7 +104,7 @@ export function isClientAbortError(err) {
  * @returns {boolean} true => swallow (log only), false => re-throw / let crash.
  */
 export function shouldSwallowUncaught(err, origin) {
-  if (!isClientAbortError(err)) return false;
+  if (!isClientAbortError(err) && !isRecoverableUpstreamTransportError(err)) return false;
   // Only swallow when the origin matches what the guard installed for. If some
   // other subsystem raised it (e.g. a deliberate `throw` in a domain), keep the
   // existing crash semantics.

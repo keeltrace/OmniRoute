@@ -7,6 +7,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
   isClientAbortError,
+  isRecoverableUpstreamTransportError,
   shouldSwallowUncaught,
   attachRequestStreamGuards,
   installProcessCrashGuard,
@@ -20,12 +21,14 @@ import * as sharedGuard from "../../src/shared/utils/httpClientAbortGuard.mjs";
 // (single source of truth, no drift).
 test("scripts/dev guard re-exports the shared src implementation (single source of truth)", () => {
   assert.equal(isClientAbortError, sharedGuard.isClientAbortError);
+  assert.equal(isRecoverableUpstreamTransportError, sharedGuard.isRecoverableUpstreamTransportError);
   assert.equal(shouldSwallowUncaught, sharedGuard.shouldSwallowUncaught);
   assert.equal(attachRequestStreamGuards, sharedGuard.attachRequestStreamGuards);
   assert.equal(installProcessCrashGuard, sharedGuard.installProcessCrashGuard);
   // And the shared module exposes everything the TS servers rely on.
   for (const name of [
     "isClientAbortError",
+    "isRecoverableUpstreamTransportError",
     "shouldSwallowUncaught",
     "attachRequestStreamGuards",
     "installProcessCrashGuard",
@@ -134,6 +137,19 @@ test("isClientAbortError matches OmniRoute SSE AbortError shapes (#fix-crash-gua
 test("shouldSwallowUncaught absorbs SSE AbortError rejections", () => {
   const sseAbort = Object.assign(new Error("request_signal_aborted"), { name: "AbortError" });
   assert.equal(shouldSwallowUncaught(sseAbort, "unhandledRejection"), true);
+});
+
+test("upstream connect timeouts cannot take down the router process", () => {
+  const upstreamTimeout = Object.assign(new TypeError("fetch failed"), {
+    cause: Object.assign(new Error("Connect Timeout Error"), { code: "UND_ERR_CONNECT_TIMEOUT" }),
+  });
+  assert.equal(isRecoverableUpstreamTransportError(upstreamTimeout), true);
+  assert.equal(shouldSwallowUncaught(upstreamTimeout, "uncaughtException"), true);
+  assert.equal(
+    isRecoverableUpstreamTransportError(Object.assign(new TypeError("fetch failed"), { cause: { code: "ENOSPC" } })),
+    false,
+    "non-network failures must still surface"
+  );
 });
 
 // Production crash (2026-08-25 → 08-31, ~170 restarts, exit code 7):
