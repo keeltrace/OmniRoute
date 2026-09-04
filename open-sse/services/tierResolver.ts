@@ -4,6 +4,7 @@ import { getModelPricing } from "./providerCostData";
 import { isExplicitlyFree } from "./providerCostData";
 import { mergeTierConfig, DEFAULT_TIER_CONFIG } from "./tierConfig";
 import { isFreeModel } from "@/shared/utils/freeModels";
+import { isProviderAlwaysFree } from "./freeMesh/policy";
 
 let dbPersistenceChecked = false;
 
@@ -91,6 +92,20 @@ export function classifyTier(provider: string, model: string): TierAssignment {
       costPer1MOutput: pricing.outputCostPer1M,
       hasFreeTier: pricing.isFree,
       freeQuotaLimit: pricing.freeQuotaLimit,
+    };
+    tierCache.set(key, assignment);
+    return assignment;
+  }
+
+  if (isProviderAlwaysFree(provider)) {
+    const assignment: TierAssignment = {
+      provider,
+      model,
+      tier: PROVIDER_TIER.FREE,
+      reason: `Free-mesh provider policy marks '${provider}' always-free`,
+      costPer1MInput: 0,
+      costPer1MOutput: 0,
+      hasFreeTier: true,
     };
     tierCache.set(key, assignment);
     return assignment;
