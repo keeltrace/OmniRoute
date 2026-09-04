@@ -25,7 +25,11 @@ import {
   isAlibabaModelStudioProvider,
 } from "../alibabaFreeTier.ts";
 import { RateLimitReason } from "../../config/constants.ts";
-import { isProviderCircuitOpenResult, isRequestScopedUpstreamFailure } from "./comboPredicates.ts";
+import {
+  isModelScoped400,
+  isProviderCircuitOpenResult,
+  isRequestScopedUpstreamFailure,
+} from "./comboPredicates.ts";
 import { isCloudflareFingerprintRejection } from "../errorClassifier.ts";
 // #10334 — agentrouter-exclusive predicate shared with the persistence layer
 // (markAccountUnavailable) so the same-request combo skip and the persisted
@@ -409,6 +413,15 @@ function markConnectionLevelExhaustion(
     // Other connection-level statuses (408/502/503/504/524) indicate the connection itself is
     // bad, so they correctly exhaust even for per-model-quota providers.
     (result.status === 500 && hasPerModelQuota(provider, rawModel))
+  ) {
+    return;
+  }
+  // Some OpenAI-compatible executors wrap an upstream model-not-found/unsupported
+  // 400 in an OmniRoute 502.  That is model-scoped, not a dead connection; do not
+  // poison the connection (and hide sibling models such as big-pickle).
+  if (
+    result.status === 502 &&
+    (isModelScoped400(errorText) || /model\s+(?:is\s+)?(?:unavailable|not found|unsupported)/i.test(errorText))
   ) {
     return;
   }
