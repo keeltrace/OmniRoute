@@ -9,6 +9,7 @@ import { test } from "vitest";
 import assert from "node:assert/strict";
 
 import { filterPaidOnlyCandidates } from "../../../open-sse/services/autoCombo/paidModelFilter.ts";
+import { setTierConfig } from "../../../open-sse/services/tierResolver.ts";
 
 // `agentrouter/claude-opus-4-8` is a documented free model (FREE_MODEL_BUDGETS);
 // `openai/gpt-4o` is paid (openai has no documented free models).
@@ -45,4 +46,26 @@ test("hidePaidModels ON preserves extra candidate fields on kept entries", () =>
   };
   const result = filterPaidOnlyCandidates([enriched, PAID], true);
   assert.deepEqual(result, [enriched], "generic <T> filter must not strip candidate fields");
+});
+
+test("hidePaidModels honors an explicit operator free-tier override", () => {
+  setTierConfig({ providerOverrides: [{ provider: "wandb", tier: "free" }] });
+  try {
+    const wandb = { provider: "wandb", model: "openai/gpt-oss-120b" };
+    assert.deepEqual(filterPaidOnlyCandidates([wandb, PAID], true), [wandb]);
+  } finally {
+    setTierConfig({ providerOverrides: [] });
+  }
+});
+
+test("hidePaidModels narrows a discovered-free model to the connections that reported it free", () => {
+  const candidate = {
+    provider: "example-provider",
+    model: "model-a",
+    allowedConnectionIds: ["free-account", "paid-account"],
+    freeConnectionIds: ["free-account"],
+  };
+  assert.deepEqual(filterPaidOnlyCandidates([candidate], true), [
+    { ...candidate, allowedConnectionIds: ["free-account"] },
+  ]);
 });

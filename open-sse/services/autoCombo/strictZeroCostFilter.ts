@@ -110,6 +110,14 @@ export interface StrictZeroCostOptions {
   /** `now` injection for deterministic tests; defaults to `Date.now`. */
   now?: () => number;
   /**
+   * Explicit operator assertion that this provider/model is free. This is for
+   * working credentials whose economics are account-specific and therefore
+   * cannot be safely encoded in the global free-model catalog. Automatic
+   * classifications never enter through this callback; production wires only
+   * the persisted provider/model tier override.
+   */
+  isOperatorDeclaredFree?: (provider: string, model: string) => boolean;
+  /**
    * The free-model catalog to look candidates up against. Defaults to the
    * real, live `FREE_MODEL_BUDGETS` — overridable so tests can prove the
    * autodiscovery contract (a provider/model that appears in the catalog is
@@ -127,6 +135,22 @@ export function findBudgetEntry(
   catalog: readonly FreeModelBudget[] = FREE_MODEL_BUDGETS
 ): FreeModelBudget | undefined {
   return catalog.find((m) => m.provider === candidate.provider && m.modelId === candidate.model);
+}
+
+function candidateConnectionIds(candidate: StrictZeroCostCandidate): string[] {
+  return candidate.connectionId ? [candidate.connectionId] : (candidate.allowedConnectionIds ?? []);
+}
+
+/**
+ * Nous Portal rotates its free recommendations independently of OmniRoute
+ * releases and encodes the zero-price variant directly in the model id. Nous's
+ * own client treats Portal `freeRecommendedModels` as the live source of truth;
+ * those ids use the `:free` suffix. Trust that provider-scoped contract here so
+ * a newly-rotated Nous free model does not have to wait for the static
+ * FREE_MODEL_BUDGETS release catalog before STRICT_ZERO_COST can use it.
+ */
+function isNousPortalFreeVariant(candidate: StrictZeroCostCandidate): boolean {
+  return candidate.provider === "nous-research" && candidate.model.toLowerCase().endsWith(":free");
 }
 
 function isConnectionStateSafe(
@@ -168,6 +192,15 @@ export function evaluateCandidateConnections(
   resolveFreeAccessState: StrictZeroCostOptions["resolveFreeAccessState"],
   options: Pick<StrictZeroCostOptions, "minRemainingAllowance" | "maxStateAgeMs" | "now">
 ): string[] {
+  if (isNousPortalFreeVariant(candidate)) {
+    // Nous inference still requires a real credential. Never manufacture a
+    // no-auth route merely because the selected model itself is price-locked
+    // free; return only the candidate's actual connection ids.
+    return candidateConnectionIds(candidate).filter(
+      (connectionId) => connectionId !== SYNTHETIC_NOAUTH_CONNECTION_ID
+    );
+  }
+
   if (!budgetEntry) return []; // not in the catalog at all → paid, or genuinely unknown
 
   const isGenuineNoAuthCandidate = candidate.connectionId === SYNTHETIC_NOAUTH_CONNECTION_ID;
@@ -192,12 +225,8 @@ export function evaluateCandidateConnections(
   // trust regardless of its answer.
   if (budgetEntry.hardStopGuaranteed !== true) return [];
 
-  const candidateConnectionIds = candidate.connectionId
-    ? [candidate.connectionId]
-    : (candidate.allowedConnectionIds ?? []);
-
   const safe: string[] = [];
-  for (const connectionId of candidateConnectionIds) {
+  for (const connectionId of candidateConnectionIds(candidate)) {
     if (connectionId === SYNTHETIC_NOAUTH_CONNECTION_ID) continue; // never reachable here, defensive
     if (isConnectionStateSafe(candidate.provider, connectionId, resolveFreeAccessState, options)) {
       safe.push(connectionId);
@@ -224,6 +253,19 @@ export function filterStrictZeroCostCandidates<T extends StrictZeroCostCandidate
   const kept: T[] = [];
   let changed = false;
   for (const candidate of pool) {
+    if (options.isOperatorDeclaredFree?.(candidate.provider, candidate.model) === true) {
+      // A persisted tier override is an explicit operator assertion, not an
+      // inferred catalog fact. Respect it before the fail-closed global
+      // catalog/quota machinery; resilience filtering already removed unusable
+      // connections before this stage in virtualFactory.ts.
+      if (candidateConnectionIds(candidate).length > 0) {
+        kept.push(candidate);
+      } else {
+        changed = true;
+      }
+      continue;
+    }
+
     const budgetEntry = findBudgetEntry(candidate, options.catalog);
     const safeConnectionIds = evaluateCandidateConnections(
       candidate,

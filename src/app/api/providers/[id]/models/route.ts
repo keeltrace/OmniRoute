@@ -117,6 +117,7 @@ import { buildStaleEncryptionKeyResponse } from "./staleEncryptionGuard";
 import {
   type ProviderModelsConfigEntry,
   PROVIDER_MODELS_CONFIG,
+  mergeNousRecommendedModelsWithCurated,
 } from "./discovery/providerModelsConfig";
 import {
   buildCodexDiscoveryCatalog,
@@ -2376,6 +2377,15 @@ export async function GET(
           );
         }
       }
+    }
+
+    if (provider === "nous-research") {
+      // Nous Portal recommendations augment the shipped catalog. Live rows win
+      // on duplicate ids so their free metadata survives into synced storage.
+      allModels = mergeNousRecommendedModelsWithCurated(
+        allModels,
+        getModelsByProviderId(provider) || []
+      );
     }
 
     return buildApiDiscoveryResponse(allModels);

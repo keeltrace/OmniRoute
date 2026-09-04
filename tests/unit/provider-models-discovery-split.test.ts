@@ -23,7 +23,10 @@ import {
   NAMED_OPENAI_STYLE_PROVIDERS,
   isNamedOpenAIStyleProvider,
 } from "../../src/app/api/providers/[id]/models/discovery/providerSets.ts";
-import { PROVIDER_MODELS_CONFIG } from "../../src/app/api/providers/[id]/models/discovery/providerModelsConfig.ts";
+import {
+  PROVIDER_MODELS_CONFIG,
+  mergeNousRecommendedModelsWithCurated,
+} from "../../src/app/api/providers/[id]/models/discovery/providerModelsConfig.ts";
 import { isCodexDiscoveryModelExcluded as isSharedCodexDiscoveryModelExcluded } from "../../src/shared/services/codexDiscoveryPolicy.ts";
 import {
   applyCodexDiscoveryFilters,
@@ -177,6 +180,47 @@ test("providerModelsConfig grok-cli.parseResponse preserves exact supported reas
   assert.deepEqual(parsed[1].supportedThinkingEfforts, ["low", "medium", "high"]);
   assert.equal(parsed[2].supportsThinking, true);
   assert.equal(parsed[2].supportedThinkingEfforts, undefined);
+});
+
+test("providerModelsConfig nous-research keeps paid recommendations and marks the live free subset", () => {
+  const config = PROVIDER_MODELS_CONFIG["nous-research"];
+  assert.equal(config.url, "https://portal.nousresearch.com/api/nous/recommended-models");
+  const parsed = config.parseResponse({
+    paidRecommendedModels: [{ modelName: "paid/model", displayName: "Paid Model" }],
+    freeRecommendedModels: [
+      { modelName: "stepfun/step-3.7-flash:free", displayName: "Step 3.7 Flash" },
+      { modelName: "stepfun/step-3.7-flash:free", displayName: "duplicate" },
+      "poolside/laguna-xs-2.1:free",
+      { id: "tencent/hy3:free" },
+      { nope: true },
+    ],
+  });
+  assert.deepEqual(parsed, [
+    { id: "stepfun/step-3.7-flash:free", name: "Step 3.7 Flash", isFree: true },
+    {
+      id: "poolside/laguna-xs-2.1:free",
+      name: "poolside/laguna-xs-2.1:free",
+      isFree: true,
+    },
+    { id: "tencent/hy3:free", name: "tencent/hy3:free", isFree: true },
+    { id: "paid/model", name: "Paid Model" },
+  ]);
+});
+
+test("providerModelsConfig Nous recommendations augment curated models without erasing live free metadata", () => {
+  const live = [
+    { id: "shared", name: "Live Shared", isFree: true },
+    { id: "portal-only:free", name: "Portal Only", isFree: true },
+  ];
+  const curated = [
+    { id: "shared", name: "Curated Shared" },
+    { id: "curated-paid", name: "Curated Paid" },
+  ];
+  assert.deepEqual(mergeNousRecommendedModelsWithCurated(live, curated), [
+    { id: "shared", name: "Live Shared", isFree: true },
+    { id: "portal-only:free", name: "Portal Only", isFree: true },
+    { id: "curated-paid", name: "Curated Paid" },
+  ]);
 });
 
 test("providerModelsConfig openrouter.parseResponse keeps the full catalog (LLMs not filtered out)", () => {

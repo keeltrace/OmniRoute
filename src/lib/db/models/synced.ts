@@ -19,6 +19,13 @@ export interface SyncedAvailableModel {
   alwaysThinking?: boolean;
   supportsTools?: boolean;
   supportsVideo?: boolean;
+  /**
+   * Provider/model was explicitly reported free at discovery time (for
+   * example an exact zero-price `pricing` block or provider `isFree` flag).
+   * Stored per connection so free routing can keep account-specific economics
+   * instead of collapsing them into a provider-global guess.
+   */
+  isFree?: boolean;
   // #4264: image-input capability captured at sync time (e.g. OpenRouter
   // `architecture.input_modalities`/`modality`) so the catalog can surface vision.
   supportsVision?: boolean;
@@ -86,6 +93,7 @@ function normalizeSyncedAvailableModel(model: unknown): SyncedAvailableModel | n
     ...(record.alwaysThinking === true ? { alwaysThinking: true } : {}),
     ...(typeof record.supportsTools === "boolean" ? { supportsTools: record.supportsTools } : {}),
     ...(typeof record.supportsVideo === "boolean" ? { supportsVideo: record.supportsVideo } : {}),
+    ...(record.isFree === true ? { isFree: true } : {}),
     ...(record.supportsVision === true ? { supportsVision: true } : {}),
   };
 }

@@ -5,6 +5,7 @@ import {
   type SyncedAvailableModel,
 } from "@/lib/db/models";
 import { CANONICAL_EFFORT_VALUES } from "@/shared/reasoning/effortStandardization";
+import { isFreeModel } from "@/shared/utils/freeModels";
 import { isObsoleteKiroModelAlias } from "@omniroute/open-sse/services/kiroModels.ts";
 import { filterSelectableModels } from "@omniroute/open-sse/services/modelLifecycle.ts";
 
@@ -328,6 +329,20 @@ export function normalizeDiscoveredModels(
     // models reached the catalog with no vision flag and vision-capable models
     // (which work at request time) showed up as non-vision after import.
     const supportsVision = detectVisionInput(record);
+    const pricing = asRecord(record.pricing);
+    const promptPrice =
+      typeof pricing.prompt === "string" || typeof pricing.prompt === "number"
+        ? pricing.prompt
+        : undefined;
+    const completionPrice =
+      typeof pricing.completion === "string" || typeof pricing.completion === "number"
+        ? pricing.completion
+        : undefined;
+    const isFree = isFreeModel(providerId || "", {
+      id,
+      isFree: record.isFree === true,
+      pricing: { prompt: promptPrice, completion: completionPrice },
+    });
 
     deduped.set(id, {
       id,
@@ -356,6 +371,7 @@ export function normalizeDiscoveredModels(
       ...(record.alwaysThinking === true ? { alwaysThinking: true } : {}),
       ...(typeof record.supportsTools === "boolean" ? { supportsTools: record.supportsTools } : {}),
       ...(typeof record.supportsVideo === "boolean" ? { supportsVideo: record.supportsVideo } : {}),
+      ...(isFree ? { isFree: true } : {}),
       ...(supportsVision ? { supportsVision: true } : {}),
     });
   }

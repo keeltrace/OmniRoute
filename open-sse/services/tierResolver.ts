@@ -3,6 +3,7 @@ import { PROVIDER_TIER } from "./tierTypes";
 import { getModelPricing } from "./providerCostData";
 import { isExplicitlyFree } from "./providerCostData";
 import { mergeTierConfig, DEFAULT_TIER_CONFIG } from "./tierConfig";
+import { isFreeModel } from "@/shared/utils/freeModels";
 
 let dbPersistenceChecked = false;
 
@@ -16,6 +17,29 @@ function cacheKey(provider: string, model: string): string {
 function matchGlob(pattern: string, text: string): boolean {
   const regexStr = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
   return new RegExp(`^${regexStr}$`, "i").test(text);
+}
+
+/**
+ * Whether the operator explicitly declared this provider/model free through
+ * the persisted tier-override surface. This intentionally does NOT include
+ * default/legacy free-provider classification or price-derived free status:
+ * callers use it as an administrative assertion that must remain distinct
+ * from OmniRoute's automatic economic inference.
+ *
+ * Precedence mirrors classifyTier(): provider override first, then model
+ * override. A provider-wide non-free override therefore cannot be silently
+ * undone by a model-level free override.
+ */
+export function isExplicitFreeTierOverride(provider: string, model: string): boolean {
+  const providerOverride = currentConfig.providerOverrides.find(
+    (o) => o.provider.toLowerCase() === provider.toLowerCase()
+  );
+  if (providerOverride) return providerOverride.tier === PROVIDER_TIER.FREE;
+
+  const modelOverride = currentConfig.modelOverrides.find(
+    (o) => o.provider.toLowerCase() === provider.toLowerCase() && matchGlob(o.modelPattern, model)
+  );
+  return modelOverride?.tier === PROVIDER_TIER.FREE;
 }
 
 export function classifyTier(provider: string, model: string): TierAssignment {
@@ -72,6 +96,25 @@ export function classifyTier(provider: string, model: string): TierAssignment {
       costPer1MOutput: pricing.outputCostPer1M,
       hasFreeTier: pricing.isFree,
       freeQuotaLimit: pricing.freeQuotaLimit,
+    };
+    tierCache.set(key, assignment);
+    return assignment;
+  }
+
+  // Model-level free identity is stronger than the sparse static pricing
+  // table. Rotating provider catalogs commonly publish explicit `:free` model
+  // ids (Nous Portal does this today). The shared predicate also understands
+  // zero-priced discovery metadata and curated free-catalog entries, so the
+  // `auto/*:free` selector and the model-listing code now use the same truth.
+  if (isFreeModel(provider, { id: model })) {
+    const assignment: TierAssignment = {
+      provider,
+      model,
+      tier: PROVIDER_TIER.FREE,
+      reason: "Model is explicitly identified as free by the shared free-model classifier",
+      costPer1MInput: 0,
+      costPer1MOutput: 0,
+      hasFreeTier: true,
     };
     tierCache.set(key, assignment);
     return assignment;

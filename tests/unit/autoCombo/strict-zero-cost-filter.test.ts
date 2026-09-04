@@ -64,6 +64,13 @@ const UNKNOWN_MODEL = {
   model: "definitely-not-cataloged",
   connectionId: REAL_CONN,
 };
+// Nous Portal publishes this shape dynamically through freeRecommendedModels;
+// it deliberately is NOT required to exist in the release-time static catalog.
+const NOUS_DYNAMIC_FREE = {
+  provider: "nous-research",
+  model: "stepfun/step-3.7-flash:free",
+  connectionId: REAL_CONN,
+};
 // A provider with no free models documented anywhere (mirrors paid-model-filter-6512's own PAID fixture).
 const PAID = { provider: "openai", model: "gpt-4o", connectionId: REAL_CONN };
 
@@ -115,6 +122,13 @@ test("model absent from the free catalog is excluded even under a known provider
   assert.deepEqual(
     evaluateCandidateConnections(UNKNOWN_MODEL, undefined, () => undefined, BASE_OPTIONS),
     []
+  );
+});
+
+test("dynamic Nous Portal :free model passes strict mode without a stale catalog row", () => {
+  assert.deepEqual(
+    evaluateCandidateConnections(NOUS_DYNAMIC_FREE, undefined, () => undefined, BASE_OPTIONS),
+    [REAL_CONN]
   );
 });
 
@@ -231,6 +245,17 @@ test("freeAccessPolicy off (default) returns the pool UNCHANGED (identity, regre
     ...BASE_OPTIONS,
   });
   assert.equal(result, pool, "must return the exact same array reference when opt-in is off");
+});
+
+test("strict pool filter honors an explicit operator free declaration", () => {
+  const wandb = { provider: "wandb", model: "openai/gpt-oss-120b", connectionId: REAL_CONN };
+  const result = filterStrictZeroCostCandidates([wandb, PAID], {
+    enabled: true,
+    resolveFreeAccessState: () => undefined,
+    isOperatorDeclaredFree: (provider) => provider === "wandb",
+    ...BASE_OPTIONS,
+  });
+  assert.deepEqual(result, [wandb]);
 });
 
 test("strict pool filter keeps only keyless(no-auth) + guaranteed-quota-SAFE candidates", () => {

@@ -66,6 +66,27 @@ describe("suffixComposition :free tier (#4517)", () => {
     assert.equal(filter!({ provider: "qoder", model: "qwen3-coder-plus" }), true);
   });
 
+  it("buildAutoCandidateFilter keeps rotating Nous Portal :free model ids", () => {
+    const filter = buildAutoCandidateFilter("coding", "free");
+    assert.equal(
+      filter!({ provider: "nous-research", model: "stepfun/step-3.7-flash:free" }),
+      true
+    );
+    assert.equal(filter!({ provider: "nous-research", model: "some-paid-model" }), false);
+  });
+
+  it("buildAutoCandidateFilter keeps connection-scoped discovered-free models", () => {
+    const filter = buildAutoCandidateFilter("coding", "free");
+    assert.equal(
+      filter!({
+        provider: "example-provider",
+        model: "provider-priced-zero-model",
+        freeConnectionIds: ["free-account"],
+      }),
+      true
+    );
+  });
+
   it("buildAutoCandidateFilter rejects paid models under :free", () => {
     // The bug: opencode-go/glm-5.1 was being picked because the filter
     // fell back to the full pool when no free candidate was found.
