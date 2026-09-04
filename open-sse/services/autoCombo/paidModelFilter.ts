@@ -13,6 +13,7 @@
  */
 import { isFreeModel } from "@/shared/utils/freeModels";
 import { isExplicitFreeTierOverride } from "../tierResolver";
+import { isProviderAlwaysFree } from "../freeMesh/policy";
 
 interface PaidFilterCandidate {
   provider: string;
@@ -22,9 +23,11 @@ interface PaidFilterCandidate {
 }
 
 /** A candidate is globally free when the shared model predicate says so,
- * or when the operator explicitly overrode its tier to free. */
+ * when the operator explicitly overrode its tier to free, or when the free
+ * intelligence policy declares the provider always-free. */
 function isGloballyFreeCandidate(candidate: PaidFilterCandidate): boolean {
   return (
+    isProviderAlwaysFree(candidate.provider) ||
     isFreeModel(candidate.provider, { id: candidate.model }) ||
     isExplicitFreeTierOverride(candidate.provider, candidate.model)
   );
