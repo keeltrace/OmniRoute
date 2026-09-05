@@ -78,6 +78,8 @@ export interface ResolveAutoStrategyDeps {
   resilienceSettings: ResilienceSettings;
   log: ComboLogger;
   buildAutoCandidates: BuildAutoCandidates;
+  /** Test seam for candidate-universe expansion; production uses the real DB-backed expander. */
+  expandAutoCandidatePool?: typeof expandAutoComboCandidatePool;
 }
 
 export type ResolveAutoStrategyResult =
@@ -154,6 +156,7 @@ export async function resolveAutoStrategyOrder(
     resilienceSettings,
     log,
     buildAutoCandidates,
+    expandAutoCandidatePool = expandAutoComboCandidatePool,
   } = deps;
   let orderedTargets = deps.orderedTargets;
   let autoUsedExplicitRouter = false;
@@ -164,6 +167,10 @@ export async function resolveAutoStrategyOrder(
     config?.compatFilterFailOpen === true ||
     (settings as { compatFilterFailOpen?: unknown } | null | undefined)?.compatFilterFailOpen ===
       true;
+
+  // Pure-auto expansion is a source-of-truth step, not a fallback after filtering.
+  // Tool/context compatibility must evaluate the complete routable universe.
+  eligibleTargets = await expandAutoCandidatePool(eligibleTargets, combo);
 
   if (requestHasTools) {
     // Keep #5240 prompt-emulation providers (toolCalling:"emulated") even when
@@ -233,8 +240,6 @@ export async function resolveAutoStrategyOrder(
         `Auto strategy: all candidates filtered by approximate context-window policy (est. ${estimatedInputTokens} tokens), falling back to full pool`
       );
     }
-
-    eligibleTargets = await expandAutoComboCandidatePool(eligibleTargets, combo);
   }
 
   const prompt = extractPromptForIntent(body);
