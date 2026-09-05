@@ -66,13 +66,13 @@ describe("suffixComposition :free tier (#4517)", () => {
     assert.equal(filter!({ provider: "qoder", model: "qwen3-coder-plus" }), true);
   });
 
-  it("buildAutoCandidateFilter keeps rotating Nous Portal :free model ids", () => {
+  it("buildAutoCandidateFilter keeps Nous models through the always-free provider policy", () => {
     const filter = buildAutoCandidateFilter("coding", "free");
     assert.equal(
       filter!({ provider: "nous-research", model: "stepfun/step-3.7-flash:free" }),
       true
     );
-    assert.equal(filter!({ provider: "nous-research", model: "some-paid-model" }), false);
+    assert.equal(filter!({ provider: "nous-research", model: "Hermes-4-405B" }), true);
   });
 
   it("buildAutoCandidateFilter keeps connection-scoped discovered-free models", () => {
