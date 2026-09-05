@@ -5,6 +5,7 @@ import {
   type SyncedAvailableModel,
 } from "@/lib/db/models";
 import { CANONICAL_EFFORT_VALUES } from "@/shared/reasoning/effortStandardization";
+import { isFreeModel } from "@/shared/utils/freeModels";
 import { isObsoleteKiroModelAlias } from "@omniroute/open-sse/services/kiroModels.ts";
 import { filterSelectableModels } from "@omniroute/open-sse/services/modelLifecycle.ts";
 
@@ -16,26 +17,6 @@ function asRecord(value: unknown): JsonRecord {
 
 function toNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
-}
-
-function isZeroPrice(value: unknown): boolean {
-  if (typeof value === "number") return value === 0;
-  if (typeof value !== "string") return false;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed === 0;
-}
-
-function hasLiveFreeEvidence(
-  id: string,
-  record: JsonRecord,
-  promptPrice: string | number | undefined,
-  completionPrice: string | number | undefined
-): boolean {
-  return (
-    record.isFree === true ||
-    id.endsWith(":free") ||
-    (isZeroPrice(promptPrice) && isZeroPrice(completionPrice))
-  );
 }
 
 /**
@@ -357,11 +338,14 @@ export function normalizeDiscoveredModels(
       typeof pricing.completion === "string" || typeof pricing.completion === "number"
         ? pricing.completion
         : undefined;
-    // Persist only evidence present in this discovery payload. Keep this local
-    // rather than importing the shared catalog predicate: discovery metadata must
-    // not pull the provider registry into API-route typechecking, and static catalog
-    // membership is intentionally not evidence about this connection's economics.
-    const isFree = hasLiveFreeEvidence(id, record, promptPrice, completionPrice);
+    // Persist only evidence present in this discovery payload. Passing an empty
+    // provider disables provider/catalog membership inside isFreeModel while
+    // retaining its explicit isFree / :free / exact-zero-price rules.
+    const isFree = isFreeModel("", {
+      id,
+      isFree: record.isFree === true,
+      pricing: { prompt: promptPrice, completion: completionPrice },
+    });
 
     deduped.set(id, {
       id,
