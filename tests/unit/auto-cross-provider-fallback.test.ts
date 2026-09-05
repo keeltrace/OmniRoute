@@ -36,7 +36,7 @@ function depsFor(buildAutoCandidates: ResolveDeps["buildAutoCandidates"]): Resol
   return {
     orderedTargets: [target("openai", "gpt-4o")],
     body: { messages: [{ role: "user", content: "hello" }] },
-    combo: { id: "pure-auto", name: "pure-auto", config: {} },
+    combo: { id: "pure-auto", name: "pure-auto", models: [], config: {} },
     settings: null,
     config: {},
     relayOptions: null,
