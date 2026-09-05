@@ -165,6 +165,10 @@ export async function resolveAutoStrategyOrder(
     (settings as { compatFilterFailOpen?: unknown } | null | undefined)?.compatFilterFailOpen ===
       true;
 
+  // Pure auto must establish its full candidate universe before capability filters.
+  // The expander remains a no-op for explicit candidatePool/models/combo-ref scopes.
+  eligibleTargets = await expandAutoComboCandidatePool(eligibleTargets, combo);
+
   if (requestHasTools) {
     // Keep #5240 prompt-emulation providers (toolCalling:"emulated") even when
     // registry/capability rows honestly report toolCalling:false.
@@ -233,8 +237,6 @@ export async function resolveAutoStrategyOrder(
         `Auto strategy: all candidates filtered by approximate context-window policy (est. ${estimatedInputTokens} tokens), falling back to full pool`
       );
     }
-
-    eligibleTargets = await expandAutoComboCandidatePool(eligibleTargets, combo);
   }
 
   const prompt = extractPromptForIntent(body);

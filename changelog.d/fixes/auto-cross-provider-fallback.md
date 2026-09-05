@@ -1,0 +1,1 @@
+- **Auto routing:** pure `auto` combos now expand the complete active provider/model pool before tool and context compatibility filters, preserving cross-provider fallbacks even when the seed targets are narrow or the request has no estimated input tokens.
