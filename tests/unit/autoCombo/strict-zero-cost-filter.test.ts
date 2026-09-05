@@ -64,9 +64,9 @@ const UNKNOWN_MODEL = {
   model: "definitely-not-cataloged",
   connectionId: REAL_CONN,
 };
-const NOUS_DYNAMIC_FREE = {
+const NOUS_ALWAYS_FREE = {
   provider: "nous-research",
-  model: "stepfun/step-3.7-flash:free",
+  model: "Hermes-4-405B",
   connectionId: REAL_CONN,
 };
 // A provider with no free models documented anywhere (mirrors paid-model-filter-6512's own PAID fixture).
@@ -119,9 +119,9 @@ test("model absent from the free catalog is excluded even under a known provider
   );
 });
 
-test("dynamic Nous Portal :free model passes strict mode without a stale catalog row", () => {
+test("Nous always-free policy passes Hermes model without catalog row, quota state, or :free suffix", () => {
   assert.deepEqual(
-    evaluateCandidateConnections(NOUS_DYNAMIC_FREE, undefined, () => undefined, BASE_OPTIONS),
+    evaluateCandidateConnections(NOUS_ALWAYS_FREE, undefined, () => undefined, BASE_OPTIONS),
     [REAL_CONN]
   );
 });
