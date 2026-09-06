@@ -777,9 +777,7 @@ export function startCleanupScheduler(): void {
   // Run cleanup 30s after startup (let the server initialize first).
   setTimeout(async () => {
     try {
-      const result = await runAutoCleanup();
-      const proxyResult = await cleanupProxyLogs();
-      const totalDeleted = result.totalDeleted + proxyResult.deleted;
+      const { totalDeleted } = await runAutoCleanup();
       if (totalDeleted > 0) {
         console.log(`[Cleanup] Startup cleanup freed ${totalDeleted} rows. Running VACUUM...`);
         try {
@@ -798,9 +796,7 @@ export function startCleanupScheduler(): void {
   // Schedule periodic cleanup every 6 hours.
   _cleanupSchedulerTimer = setInterval(async () => {
     try {
-      const result = await runAutoCleanup();
-      const proxyResult = await cleanupProxyLogs();
-      const totalDeleted = result.totalDeleted + proxyResult.deleted;
+      const { totalDeleted } = await runAutoCleanup();
       if (totalDeleted > 0) {
         console.log(`[Cleanup] Periodic cleanup freed ${totalDeleted} rows. Running VACUUM...`);
         try {
