@@ -7,6 +7,55 @@ export class HuggingChatStreamError extends Error {
   }
 }
 
+export const MAX_JSONL_RESPONSE_BYTES = 16 * 1024 * 1024;
+
+function abortError(signal: AbortSignal): Error {
+  if (signal.reason instanceof Error) return signal.reason;
+  const error = new Error("HuggingChat response read aborted");
+  error.name = "AbortError";
+  return error;
+}
+
+async function readReaderChunk(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  signal?: AbortSignal | null
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  if (!signal) return reader.read();
+  if (signal.aborted) {
+    cancelReader(reader);
+    throw abortError(signal);
+  }
+
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => {
+      cancelReader(reader);
+      reject(abortError(signal));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    const result = await Promise.race([reader.read(), aborted]);
+    // reader.cancel() may resolve the pending read as { done: true } before
+    // the abort promise rejection is observed. Preserve abort semantics rather
+    // than turning a cancelled/stalled upstream into an empty success.
+    if (signal.aborted) throw abortError(signal);
+    return result;
+  } finally {
+    if (onAbort) signal.removeEventListener("abort", onAbort);
+  }
+}
+
+function addResponseBytes(total: number, value: Uint8Array | undefined): number {
+  const next = total + (value?.byteLength || 0);
+  if (next > MAX_JSONL_RESPONSE_BYTES) {
+    throw new HuggingChatStreamError(
+      `HuggingChat upstream response exceeded ${MAX_JSONL_RESPONSE_BYTES} byte limit`
+    );
+  }
+  return next;
+}
+
 function cancelReader(reader: ReadableStreamDefaultReader<Uint8Array>): void {
   try {
     void reader.cancel().catch(() => undefined);
@@ -81,16 +130,23 @@ export async function* streamJsonlToOpenAi(
   const decoder = new TextDecoder();
   let buffer = "";
   let emittedRole = false;
-  let fullText = "";
+  let emittedTextLength = 0;
+  let responseBytes = 0;
   let finished = false;
 
   try {
     while (true) {
       if (signal?.aborted) break;
 
-      const { value, done } = await reader.read();
+      const { value, done } = await readReaderChunk(reader, signal);
       if (done) break;
 
+      try {
+        responseBytes = addResponseBytes(responseBytes, value);
+      } catch (error) {
+        cancelReader(reader);
+        throw error;
+      }
       buffer += decoder.decode(value, { stream: true });
 
       const lines = buffer.split("\n");
@@ -119,7 +175,7 @@ export async function* streamJsonlToOpenAi(
             });
           }
 
-          fullText += parsed.token;
+          emittedTextLength += parsed.token.length;
           yield sseChunk({
             id,
             object: "chat.completion.chunk",
@@ -130,7 +186,7 @@ export async function* streamJsonlToOpenAi(
         }
 
         if (parsed.text) {
-          const remaining = parsed.text.slice(fullText.length);
+          const remaining = parsed.text.slice(emittedTextLength);
           if (remaining) {
             if (!emittedRole) {
               emittedRole = true;
@@ -214,15 +270,22 @@ export async function readJsonlResponse(
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  let fullText = "";
+  const textFragments: string[] = [];
+  let responseBytes = 0;
 
   try {
     while (true) {
       if (signal?.aborted) break;
 
-      const { value, done } = await reader.read();
+      const { value, done } = await readReaderChunk(reader, signal);
       if (done) break;
 
+      try {
+        responseBytes = addResponseBytes(responseBytes, value);
+      } catch (error) {
+        cancelReader(reader);
+        throw error;
+      }
       buffer += decoder.decode(value, { stream: true });
 
       const lines = buffer.split("\n");
@@ -233,7 +296,7 @@ export async function readJsonlResponse(
         if (!trimmed) continue;
 
         const parsed = parseJsonlLine(trimmed);
-        if (parsed.token) fullText += parsed.token;
+        if (parsed.token) textFragments.push(parsed.token);
         if (parsed.text) return parsed.text;
         if (parsed.error) {
           cancelReader(reader);
@@ -245,12 +308,12 @@ export async function readJsonlResponse(
     if (buffer.trim()) {
       const parsed = parseJsonlLine(buffer.trim());
       if (parsed.text) return parsed.text;
-      if (parsed.token) fullText += parsed.token;
+      if (parsed.token) textFragments.push(parsed.token);
       if (parsed.error) throw new HuggingChatStreamError(parsed.error);
     }
   } finally {
     reader.releaseLock();
   }
 
-  return fullText;
+  return textFragments.join("");
 }
