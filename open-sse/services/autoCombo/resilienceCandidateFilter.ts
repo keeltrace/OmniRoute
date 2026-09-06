@@ -31,6 +31,7 @@ export interface ConnectionResilienceView {
   testStatus?: string | null;
   authType?: string | null;
   refreshToken?: string | null;
+  errorCode?: string | number | null;
 }
 
 /** Index connection resilience views by id, for the O(1) lookups this filter needs. */
@@ -42,14 +43,23 @@ export function buildConnectionResilienceMap(
   return byId;
 }
 
+function isTransientUnavailable(connection: ConnectionResilienceView): boolean {
+  const code = Number(connection.errorCode);
+  if (!Number.isFinite(code)) return false;
+  return code === 408 || code === 425 || code === 429 || (code >= 500 && code <= 599);
+}
+
 function isConnectionResilienceBlocked(
   connection: ConnectionResilienceView,
-  allowRefreshableExpiredOAuth = false
+  allowMetaOrcRecovery = false
 ): boolean {
   if (isAccountUnavailable(connection.rateLimitedUntil)) return true;
   const status = connection.testStatus;
-  if (status === "unavailable") return true;
-  if (status === "expired" && allowRefreshableExpiredOAuth) {
+  if (status === "unavailable") {
+    if (allowMetaOrcRecovery && isTransientUnavailable(connection)) return false;
+    return true;
+  }
+  if (status === "expired" && allowMetaOrcRecovery) {
     const isOAuth = String(connection.authType || "").toLowerCase() === "oauth";
     const hasRefreshToken =
       typeof connection.refreshToken === "string" && connection.refreshToken.trim().length > 0;
@@ -64,11 +74,10 @@ function isConnectionEligibleForModel(
   connectionId: string,
   model: string,
   connectionsById: Map<string, ConnectionResilienceView>,
-  allowRefreshableExpiredOAuth = false
+  allowMetaOrcRecovery = false
 ): boolean {
   const connection = connectionsById.get(connectionId);
-  if (connection && isConnectionResilienceBlocked(connection, allowRefreshableExpiredOAuth))
-    return false;
+  if (connection && isConnectionResilienceBlocked(connection, allowMetaOrcRecovery)) return false;
   return !isModelLocked(provider, connectionId, model);
 }
 
@@ -87,7 +96,7 @@ export function filterResilienceBlockedCandidates<T extends ResilienceFilterCand
   pool: T[],
   connectionsById: Map<string, ConnectionResilienceView>,
   skip = false,
-  allowRefreshableExpiredOAuth = false
+  allowMetaOrcRecovery = false
 ): T[] {
   if (skip || !Array.isArray(pool) || pool.length === 0) return pool;
 
@@ -108,7 +117,7 @@ export function filterResilienceBlockedCandidates<T extends ResilienceFilterCand
           connectionId,
           candidate.model,
           connectionsById,
-          allowRefreshableExpiredOAuth
+          allowMetaOrcRecovery
         )
       );
       if (allowedConnectionIds.length === 0) {
@@ -129,7 +138,7 @@ export function filterResilienceBlockedCandidates<T extends ResilienceFilterCand
           candidate.connectionId,
           candidate.model,
           connectionsById,
-          allowRefreshableExpiredOAuth
+          allowMetaOrcRecovery
         )
       ) {
         changed = true;
