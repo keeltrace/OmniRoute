@@ -383,20 +383,18 @@ export async function registerNodejs(): Promise<void> {
     console.warn("[STARTUP] Could not clear stale crash cooldowns (non-fatal):", msg);
   }
 
-  await scanComboModelNameCollisionsAtBoot();
+  const backgroundServicesDisabled = isBackgroundServicesDisabled();
+  if (!backgroundServicesDisabled) {
+    await scanComboModelNameCollisionsAtBoot();
+  }
   await warmAdaptiveVirtualLanesIntoRuntime();
 
   const [
     { initGracefulShutdown },
     { initApiBridgeServer },
-    { startBackgroundRefresh },
-    { ensureCloudSyncInitialized },
-    { startProviderLimitsSyncScheduler },
     { getSettings },
     { applyRuntimeSettings },
-    { startRuntimeConfigHotReload },
     { startSpendBatchWriter },
-    { startCleanupScheduler },
     { registerDefaultGuardrails },
     { ensurePersistentManagementPasswordHash },
     { skillExecutor },
@@ -404,25 +402,14 @@ export async function registerNodejs(): Promise<void> {
   ] = await Promise.all([
     import("@/lib/gracefulShutdown"),
     import("@/lib/apiBridgeServer"),
-    import("@/domain/quotaCache"),
-    import("@/lib/initCloudSync"),
-    import("@/shared/services/providerLimitsSyncScheduler"),
     import("@/lib/db/settings"),
     import("@/lib/config/runtimeSettings"),
-    import("@/lib/config/hotReload"),
     import("@/lib/spend/batchWriter"),
-    import("@/lib/db/cleanup"),
     import("@/lib/guardrails"),
     import("@/lib/auth/managementPassword"),
     import("@/lib/skills/executor"),
     import("@/lib/skills/builtins"),
   ]);
-
-  // Proxy health scheduler (auto-removes dead proxies on interval)
-  await import("@/lib/proxyHealth/scheduler");
-
-  // Free-proxy auto-sync scheduler (re-fetches free-proxy sources on interval, #7079)
-  await import("@/lib/freeProxyProviders/scheduler");
 
   initGracefulShutdown();
   initApiBridgeServer();
@@ -432,7 +419,20 @@ export async function registerNodejs(): Promise<void> {
   console.log("[STARTUP] Spend batch writer started");
   console.log("[STARTUP] Guardrail registry initialized");
   console.log("[STARTUP] Builtin skill handlers registered");
-  if (!isBackgroundServicesDisabled()) {
+  if (!backgroundServicesDisabled) {
+    const [
+      { startBackgroundRefresh },
+      { ensureCloudSyncInitialized },
+      { startProviderLimitsSyncScheduler },
+    ] = await Promise.all([
+      import("@/domain/quotaCache"),
+      import("@/lib/initCloudSync"),
+      import("@/shared/services/providerLimitsSyncScheduler"),
+    ]);
+    await Promise.all([
+      import("@/lib/proxyHealth/scheduler"),
+      import("@/lib/freeProxyProviders/scheduler"),
+    ]);
     startBackgroundRefresh();
     console.log("[STARTUP] Quota cache background refresh started");
     startProviderLimitsSyncScheduler();
@@ -450,15 +450,11 @@ export async function registerNodejs(): Promise<void> {
   }
 
   try {
-    const [
-      { migrateCodexConnectionDefaultsFromLegacySettings },
-      { startSessionAccountAffinityCleanup },
-      { seedDefaultModelAliases },
-    ] = await Promise.all([
-      import("@/lib/providers/codexConnectionDefaults"),
-      import("@/lib/db/sessionAccountAffinity"),
-      import("@/lib/modelAliasSeed"),
-    ]);
+    const [{ migrateCodexConnectionDefaultsFromLegacySettings }, { seedDefaultModelAliases }] =
+      await Promise.all([
+        import("@/lib/providers/codexConnectionDefaults"),
+        import("@/lib/modelAliasSeed"),
+      ]);
     let settings = await getSettings();
     const passwordState = await ensurePersistentManagementPasswordHash({
       logger: console,
@@ -509,14 +505,17 @@ export async function registerNodejs(): Promise<void> {
     console.log(
       `[STARTUP] Model alias seed: applied=${seededModelAliases.applied.length}, skipped=${seededModelAliases.skipped.length}, removed=${seededModelAliases.removed.length}, failed=${seededModelAliases.failed.length}`
     );
-    startSessionAccountAffinityCleanup();
+    if (!backgroundServicesDisabled) {
+      const { startSessionAccountAffinityCleanup } = await import("@/lib/db/sessionAccountAffinity");
+      startSessionAccountAffinityCleanup();
+    }
 
     const migration = await migrateCodexConnectionDefaultsFromLegacySettings();
     if (migration.migrated) {
       console.log(
         `[STARTUP] Migrated Codex connection defaults for ${migration.updatedConnectionIds.length} connection(s)`
       );
-      if (settings.cloudEnabled === true) {
+      if (settings.cloudEnabled === true && !backgroundServicesDisabled) {
         const [{ syncToCloud }, { getConsistentMachineId }] = await Promise.all([
           import("@/lib/cloudSync"),
           import("@/shared/utils/machineId"),
@@ -527,30 +526,30 @@ export async function registerNodejs(): Promise<void> {
       }
     }
 
-    startRuntimeConfigHotReload();
+    if (!backgroundServicesDisabled) {
+      const { startRuntimeConfigHotReload } = await import("@/lib/config/hotReload");
+      startRuntimeConfigHotReload();
+    }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn("[STARTUP] Could not restore runtime settings:", msg);
   }
 
-  // Proactively start the credential-health sweep at boot so stale web-session
-  // connections (cookies that expired overnight) get re-probed and recovered on
-  // startup — instead of staying red until the first real request lazily imports
-  // the on-demand credentialGate. Idempotent; self-disables via
-  // OMNIROUTE_DISABLE_CREDENTIAL_HEALTH_CHECK and its cadence is tunable via
-  // CREDENTIAL_HEALTH_CHECK_INTERVAL. NOTE: this MUST live here (the real Next.js
-  // instrumentation startup), NOT in the unused src/server-init.ts.
-  try {
-    const { initCredentialHealthCheck } = await import("@/lib/credentialHealth/scheduler");
-    const started = initCredentialHealthCheck();
-    console.log(
-      started
-        ? "[STARTUP] Credential health scheduler started"
-        : "[STARTUP] Credential health scheduler disabled"
-    );
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.warn("[STARTUP] Could not start credential health scheduler:", msg);
+  // Credential probing is background work. In router-only mode, avoid importing
+  // the scheduler graph at all; request-time credential gates remain authoritative.
+  if (!backgroundServicesDisabled) {
+    try {
+      const { initCredentialHealthCheck } = await import("@/lib/credentialHealth/scheduler");
+      const started = initCredentialHealthCheck();
+      console.log(
+        started
+          ? "[STARTUP] Credential health scheduler started"
+          : "[STARTUP] Credential health scheduler disabled"
+      );
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn("[STARTUP] Could not start credential health scheduler:", msg);
+    }
   }
 
   try {
@@ -558,50 +557,52 @@ export async function registerNodejs(): Promise<void> {
     initAuditLog();
     console.log("[COMPLIANCE] Audit log table initialized");
 
-    const cleanup = await cleanupExpiredLogs();
-    if (
-      cleanup.deletedUsage ||
-      cleanup.deletedCallLogs ||
-      cleanup.deletedProxyLogs ||
-      cleanup.deletedRequestDetailLogs ||
-      cleanup.deletedAuditLogs ||
-      cleanup.deletedMcpAuditLogs
-    ) {
-      console.log("[COMPLIANCE] Expired log cleanup:", cleanup);
+    if (!backgroundServicesDisabled) {
+      const cleanup = await cleanupExpiredLogs();
+      if (
+        cleanup.deletedUsage ||
+        cleanup.deletedCallLogs ||
+        cleanup.deletedProxyLogs ||
+        cleanup.deletedRequestDetailLogs ||
+        cleanup.deletedAuditLogs ||
+        cleanup.deletedMcpAuditLogs
+      ) {
+        console.log("[COMPLIANCE] Expired log cleanup:", cleanup);
+      }
     }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn("[COMPLIANCE] Could not initialize audit log:", msg);
   }
 
-  // Storage-configured scheduled VACUUM (#4437): registers the timer from
-  // Settings > System & Storage and persists lastVacuumAt for the UI.
-  try {
-    const { initVacuumScheduler } = await import("@/lib/db/vacuumScheduler");
-    initVacuumScheduler();
-    console.log("[STARTUP] Scheduled VACUUM initialized (#4437)");
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.warn("[STARTUP] Could not initialize vacuum scheduler (non-fatal):", msg);
+  if (!backgroundServicesDisabled) {
+    // Storage-configured scheduled VACUUM (#4437) and retention cleanup are
+    // maintenance services. Keep their module graphs cold in router-only mode.
+    try {
+      const { initVacuumScheduler } = await import("@/lib/db/vacuumScheduler");
+      initVacuumScheduler();
+      console.log("[STARTUP] Scheduled VACUUM initialized (#4437)");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn("[STARTUP] Could not initialize vacuum scheduler (non-fatal):", msg);
+    }
+
+    try {
+      const { startCleanupScheduler } = await import("@/lib/db/cleanup");
+      startCleanupScheduler();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn("[STARTUP] Could not start cleanup scheduler (non-fatal):", msg);
+    }
   }
 
-  // Retention cleanup scheduler (#4691/#6988, #9624): runs the general retention
-  // cleanup once after startup and then every 6 hours. Previously this was only
-  // wired into the unused src/server-init.ts, so telemetry tables grew unboundedly
-  // even with retention.autoCleanupEnabled=true. Idempotent (guarded internally).
-  try {
-    startCleanupScheduler();
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.warn("[STARTUP] Could not start cleanup scheduler (non-fatal):", msg);
-  }
+  // Model-catalog warmup is background work. Respect the documented
+  // OMNIROUTE_DISABLE_BACKGROUND_SERVICES contract so router-only/control-plane
+  // deployments do not eagerly materialize the full catalog at boot. The
+  // first /v1/models request can still build it on demand.
+  if (!backgroundServicesDisabled) {
+    void warmModelCatalogCache();
 
-  // Warm the model catalog's durable, apiKey-independent sub-caches at
-  // startup — see warmModelCatalogCache() for why the top-level Response
-  // cache alone doesn't deliver this. Fire-and-forget, non-fatal.
-  void warmModelCatalogCache();
-
-  if (!isBackgroundServicesDisabled()) {
     // All services are independent — run in parallel for faster cold start.
     await Promise.allSettled([
       import("@/lib/services/bootstrap")
