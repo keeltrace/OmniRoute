@@ -92,6 +92,25 @@ test("persists a call log row with the mapped fields (default cacheSource=upstre
   assert.equal(row.cacheSource, "upstream");
 });
 
+test("combo fallback attempts sharing one pending id persist with distinct trace ids", async () => {
+  const pendingRequestId = "shared-pending-combo-1";
+  persistAttemptLogs(
+    { status: 400, error: "first model unavailable" },
+    baseCtx({ pendingRequestId, traceId: "combo-attempt-trace-1" })
+  );
+  persistAttemptLogs(
+    { status: 200, tokens: { input: 1, output: 1 } },
+    baseCtx({ pendingRequestId, traceId: "combo-attempt-trace-2" })
+  );
+
+  const first = await pollForCallLog("combo-attempt-trace-1");
+  const second = await pollForCallLog("combo-attempt-trace-2");
+  assert.ok(first, "first fallback attempt should persist");
+  assert.ok(second, "second fallback attempt should persist");
+  assert.equal(first.status, 400);
+  assert.equal(second.status, 200);
+});
+
 test("uses final credentials connectionId when Codex failover rotates the account", async () => {
   const id = "attempt-codex-rotation-1";
   persistAttemptLogs(

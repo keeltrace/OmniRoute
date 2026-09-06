@@ -449,7 +449,11 @@ export function persistAttemptLogs(args: PersistAttemptLogsArgs, ctx: PersistAtt
   }
 
   saveCallLog({
-    id: pendingRequestId,
+    // pendingRequestId is deliberately reused across combo fallbacks so the
+    // live dashboard keeps one stable in-flight node. call_logs.id is a DB
+    // primary key, however, so each provider attempt must use its per-attempt
+    // traceId or fallback attempts collide and generate wasted SQLite writes.
+    id: traceId || pendingRequestId,
     method: "POST",
     path: clientRawRequest?.endpoint || "/v1/chat/completions",
     status,
