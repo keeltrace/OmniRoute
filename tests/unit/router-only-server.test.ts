@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   dispatchRouterRequest,
   normalizeRouterPath,
+  prewarmRouterOnlyRuntime,
   type RouterOnlyDependencies,
 } from "../../scripts/router-only-server.ts";
 
@@ -114,4 +115,36 @@ test("unsupported methods fail locally before loading a handler", async () => {
   assert.equal(response.status, 405);
   assert.equal(response.headers.get("allow"), "GET, HEAD, OPTIONS");
   assert.deepEqual(calls, []);
+});
+
+test("prewarm loads the required chat route before optional warmers and fails open on optional work", async () => {
+  const calls: string[] = [];
+  const d = deps([]);
+  const loadChatRoute = d.loadChatRoute;
+  d.loadChatRoute = async () => {
+    calls.push("chat-load");
+    return loadChatRoute();
+  };
+
+  await prewarmRouterOnlyRuntime(d, [
+    { name: "ok", run: async () => calls.push("warm-ok") },
+    {
+      name: "optional-failure",
+      run: async () => {
+        calls.push("warm-fail");
+        throw new Error("optional warmup failed");
+      },
+    },
+  ]);
+
+  assert.deepEqual(calls, ["chat-load", "warm-ok", "warm-fail"]);
+});
+
+test("prewarm fails closed when the required chat route cannot load", async () => {
+  const d = deps([]);
+  d.loadChatRoute = async () => {
+    throw new Error("chat route unavailable");
+  };
+
+  await assert.rejects(() => prewarmRouterOnlyRuntime(d, []), /chat route unavailable/);
 });

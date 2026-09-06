@@ -206,6 +206,55 @@ export function createRouterOnlyServer(
   return server;
 }
 
+export type RouterOnlyWarmer = {
+  name: string;
+  run: () => Promise<unknown>;
+};
+
+export async function prewarmRouterOnlyRuntime(
+  dependencies: RouterOnlyDependencies = defaultRouterOnlyDependencies,
+  optionalWarmers?: RouterOnlyWarmer[]
+): Promise<void> {
+  const startedAt = Date.now();
+
+  // The chat route is mandatory. Loading it before listen() moves tsx/source-module
+  // cold-start cost out of the first real request and makes socket readiness honest.
+  await dependencies.loadChatRoute();
+
+  const warmers: RouterOnlyWarmer[] = optionalWarmers ?? [
+    {
+      name: "plugins",
+      run: async () => {
+        const { preloadPlugins } = await import("@/lib/plugins/hooks");
+        await preloadPlugins();
+      },
+    },
+    {
+      name: "rate-limits",
+      run: async () => {
+        const { initializeRateLimits } = await import("../open-sse/services/rateLimitManager.ts");
+        await initializeRateLimits();
+      },
+    },
+    {
+      name: "provider-credentials",
+      run: async () => {
+        const { PROVIDERS } = await import("../open-sse/config/constants.ts");
+        void Reflect.ownKeys(PROVIDERS);
+      },
+    },
+  ];
+
+  const results = await Promise.allSettled(warmers.map((warmer) => warmer.run()));
+  results.forEach((result, index) => {
+    if (result.status === "rejected") {
+      const reason = result.reason instanceof Error ? result.reason.message : String(result.reason);
+      console.warn(`[router-only] optional prewarm failed: ${warmers[index].name}: ${reason}`);
+    }
+  });
+  console.log(`[router-only] prewarm complete in ${Date.now() - startedAt}ms`);
+}
+
 export async function startRouterOnlyServer(): Promise<http.Server> {
   // Load the same persisted DATA_DIR/server.env + .env layers used by the stock
   // Next launchers before resolving bind settings or importing provider/database
@@ -237,6 +286,7 @@ export async function startRouterOnlyServer(): Promise<http.Server> {
 
   const { registerNodejs } = await import("@/instrumentation-node.ts");
   await registerNodejs();
+  await prewarmRouterOnlyRuntime(defaultRouterOnlyDependencies);
 
   const server = createRouterOnlyServer(defaultRouterOnlyDependencies, { host, port });
   await new Promise<void>((resolve, reject) => {

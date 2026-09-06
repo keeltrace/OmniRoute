@@ -322,6 +322,11 @@ function ensurePluginsLoaded(): Promise<void> {
   return pluginBoot;
 }
 
+/** Preload plugin hooks in the same module graph used by request handlers. */
+export function preloadPlugins(): Promise<void> {
+  return ensurePluginsLoaded();
+}
+
 /**
  * Run onRequest hooks — blocking. Plugins can modify body/metadata or block with 403.
  */
