@@ -420,3 +420,24 @@ test("handleMcpStreamableHTTP auto-recovers when stale session id is sent with i
 
   mod.shutdownMcpHttp();
 });
+
+// ── Memory bound: streamable session cardinality ─────────────────────────────
+
+test("streamable MCP sessions have a hard cardinality cap", () => {
+  assert.ok(
+    src.includes("const MAX_STREAMABLE_MCP_SESSIONS = 64"),
+    "streamable MCP session count must be explicitly bounded"
+  );
+});
+
+test("new streamable sessions enforce capacity before allocating server state", () => {
+  const fnBlock = src.match(/function createStreamableSession\(\)[\s\S]*?return session;\s*\}/);
+  assert.ok(fnBlock, "createStreamableSession function must exist");
+  const capacityIndex = fnBlock[0].indexOf("ensureStreamableSessionCapacity()");
+  const serverIndex = fnBlock[0].indexOf("createMcpServer()");
+  assert.ok(capacityIndex >= 0, "createStreamableSession must enforce the session cap");
+  assert.ok(
+    serverIndex >= 0 && capacityIndex < serverIndex,
+    "capacity must be enforced before allocating a new McpServer"
+  );
+});

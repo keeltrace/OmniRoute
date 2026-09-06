@@ -40,3 +40,24 @@ test("proxy fallback negative cache is scoped by target URL, not only hostname",
     "https://api.example.test/v1/chat/completions",
   ]);
 });
+
+test("proxy fallback cache stays bounded under high target cardinality", async () => {
+  const proxyUrl = "http://127.0.0.1:18080";
+  let probeCount = 0;
+
+  __setProxyFallbackTestHooks({
+    getProxyCandidates: async () => [proxyUrl],
+    testSingleProxy: async () => {
+      probeCount++;
+      return { ok: false, latencyMs: null };
+    },
+  });
+
+  for (let i = 0; i < 257; i++) {
+    await findWorkingProxy("api.example.test", `https://api.example.test/v1/models?tenant=${i}`);
+  }
+  assert.equal(probeCount, 257);
+
+  await findWorkingProxy("api.example.test", "https://api.example.test/v1/models?tenant=0");
+  assert.equal(probeCount, 258, "oldest target should have been evicted at the cache cap");
+});

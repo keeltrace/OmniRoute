@@ -37,6 +37,30 @@ interface ProxyShape {
 
 const PROXY_FALLBACK_CACHE = new Map<string, CacheEntry>();
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const MAX_PROXY_FALLBACK_CACHE_ENTRIES = 256;
+
+function setProxyFallbackCache(cacheKey: string, proxyUrl: string): void {
+  const now = Date.now();
+  for (const [key, entry] of PROXY_FALLBACK_CACHE) {
+    if (entry.expiresAt <= now) PROXY_FALLBACK_CACHE.delete(key);
+  }
+
+  // Refresh insertion order for existing keys and evict the oldest distinct
+  // target before admitting a new one. Provider URLs can include tenant/path
+  // dimensions, so TTL alone does not bound cardinality when every request is
+  // for a new target.
+  if (PROXY_FALLBACK_CACHE.has(cacheKey)) {
+    PROXY_FALLBACK_CACHE.delete(cacheKey);
+  } else if (PROXY_FALLBACK_CACHE.size >= MAX_PROXY_FALLBACK_CACHE_ENTRIES) {
+    const oldestKey = PROXY_FALLBACK_CACHE.keys().next().value as string | undefined;
+    if (oldestKey !== undefined) PROXY_FALLBACK_CACHE.delete(oldestKey);
+  }
+
+  PROXY_FALLBACK_CACHE.set(cacheKey, {
+    proxyUrl,
+    expiresAt: now + CACHE_TTL_MS,
+  });
+}
 
 type ProxyFallbackTestHooks = {
   getProxyCandidates?: (targetUrl?: string) => Promise<string[]>;
@@ -356,18 +380,12 @@ export async function findWorkingProxy(
     if (working && working.status === "fulfilled") {
       const proxyUrl = working.value.proxyUrl;
       // Cache the working proxy
-      PROXY_FALLBACK_CACHE.set(cacheKey, {
-        proxyUrl,
-        expiresAt: Date.now() + CACHE_TTL_MS,
-      });
+      setProxyFallbackCache(cacheKey, proxyUrl);
       return proxyUrl;
     }
 
     // All failed — cache the negative result to avoid re-probing too often
-    PROXY_FALLBACK_CACHE.set(cacheKey, {
-      proxyUrl: "",
-      expiresAt: Date.now() + CACHE_TTL_MS,
-    });
+    setProxyFallbackCache(cacheKey, "");
 
     return null;
   })();

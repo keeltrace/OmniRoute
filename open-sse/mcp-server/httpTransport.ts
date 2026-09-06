@@ -30,6 +30,7 @@ type StreamableSession = {
 const _streamableSessions = new Map<string, StreamableSession>();
 
 const MCP_SESSION_IDLE_MS = 5 * 60 * 1000;
+const MAX_STREAMABLE_MCP_SESSIONS = 64;
 
 const _mcpSessionSweep = setInterval(() => {
   const now = Date.now();
@@ -78,6 +79,20 @@ function closeAllStreamableSessions(): void {
   }
 }
 
+function ensureStreamableSessionCapacity(): void {
+  if (_streamableSessions.size < MAX_STREAMABLE_MCP_SESSIONS) return;
+
+  let oldestSessionId: string | null = null;
+  let oldestActivity = Number.POSITIVE_INFINITY;
+  for (const [sessionId, session] of _streamableSessions) {
+    if (session.lastActivityAt < oldestActivity) {
+      oldestActivity = session.lastActivityAt;
+      oldestSessionId = sessionId;
+    }
+  }
+  if (oldestSessionId) closeStreamableSession(oldestSessionId);
+}
+
 function ensureSseServer(): {
   server: McpServer;
   transport: WebStandardStreamableHTTPServerTransport;
@@ -102,6 +117,7 @@ function ensureSseServer(): {
 
 function createStreamableSession(): StreamableSession {
   closeSseTransport();
+  ensureStreamableSessionCapacity();
 
   const sessionId = randomUUID();
   const server = createMcpServer();

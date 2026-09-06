@@ -98,29 +98,28 @@ function buildResponsesOutputItemKey(item: unknown): string | null {
   return `${type}:${id}:${callId}:${outputIndex}:${name}`;
 }
 
-// Module-level Set reused across calls to avoid allocation per event
-const _seenResponsesKeys = new Set<string>();
-
 export function pushUniqueResponsesOutputItems(target: unknown[], items: readonly unknown[]) {
-  // Clear the reused Set instead of allocating new one
-  _seenResponsesKeys.clear();
+  // Keep dedupe state request-local. A module-level Set retains every key from
+  // the last large response until another call arrives and can also be cleared
+  // by an overlapping request while this function is still using it.
+  const seenResponsesKeys = new Set<string>();
 
   for (const existingItem of target) {
     const key = buildResponsesOutputItemKey(existingItem);
     if (key) {
-      _seenResponsesKeys.add(key);
+      seenResponsesKeys.add(key);
     }
   }
 
   for (const item of items) {
     const key = buildResponsesOutputItemKey(item);
-    if (key && _seenResponsesKeys.has(key)) {
+    if (key && seenResponsesKeys.has(key)) {
       continue;
     }
 
     target.push(item);
     if (key) {
-      _seenResponsesKeys.add(key);
+      seenResponsesKeys.add(key);
     }
   }
 }
