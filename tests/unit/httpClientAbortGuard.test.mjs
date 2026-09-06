@@ -21,7 +21,10 @@ import * as sharedGuard from "../../src/shared/utils/httpClientAbortGuard.mjs";
 // (single source of truth, no drift).
 test("scripts/dev guard re-exports the shared src implementation (single source of truth)", () => {
   assert.equal(isClientAbortError, sharedGuard.isClientAbortError);
-  assert.equal(isRecoverableUpstreamTransportError, sharedGuard.isRecoverableUpstreamTransportError);
+  assert.equal(
+    isRecoverableUpstreamTransportError,
+    sharedGuard.isRecoverableUpstreamTransportError
+  );
   assert.equal(shouldSwallowUncaught, sharedGuard.shouldSwallowUncaught);
   assert.equal(attachRequestStreamGuards, sharedGuard.attachRequestStreamGuards);
   assert.equal(installProcessCrashGuard, sharedGuard.installProcessCrashGuard);
@@ -106,7 +109,10 @@ test("shouldSwallowUncaught absorbs the real 'aborted' uncaughtException signatu
   assert.equal(shouldSwallowUncaught(abortErr, "uncaughtException"), true);
   assert.equal(shouldSwallowUncaught(abortErr, undefined), true);
   assert.equal(
-    shouldSwallowUncaught(Object.assign(new Error("ECONNRESET"), { code: "ECONNRESET" }), "uncaughtException"),
+    shouldSwallowUncaught(
+      Object.assign(new Error("ECONNRESET"), { code: "ECONNRESET" }),
+      "uncaughtException"
+    ),
     true
   );
 });
@@ -129,6 +135,18 @@ test("isClientAbortError matches OmniRoute SSE AbortError shapes (#fix-crash-gua
   // fetch / DOMException-style cancellation
   const domAbort = new DOMException("This operation was aborted", "AbortError");
   assert.equal(isClientAbortError(domAbort), true, "DOMException AbortError must be absorbed");
+  const comboTimeout = Object.assign(new Error("combo-per-model-timeout"), { name: "AbortError" });
+  assert.equal(
+    isClientAbortError(comboTimeout),
+    true,
+    "combo per-model timeout AbortError is expected control flow and must not kill the router"
+  );
+  const hedgeCancel = Object.assign(new Error("hedge-cancelled"), { name: "AbortError" });
+  assert.equal(
+    isClientAbortError(hedgeCancel),
+    true,
+    "hedge cancellation AbortError must be absorbed"
+  );
   // A genuine TypeError that merely MENTIONS 'abort' must NOT be absorbed.
   const typo = new TypeError("Cannot read properties of undefined (reading 'abort')");
   assert.equal(isClientAbortError(typo), false);
@@ -146,7 +164,9 @@ test("upstream connect timeouts cannot take down the router process", () => {
   assert.equal(isRecoverableUpstreamTransportError(upstreamTimeout), true);
   assert.equal(shouldSwallowUncaught(upstreamTimeout, "uncaughtException"), true);
   assert.equal(
-    isRecoverableUpstreamTransportError(Object.assign(new TypeError("fetch failed"), { cause: { code: "ENOSPC" } })),
+    isRecoverableUpstreamTransportError(
+      Object.assign(new TypeError("fetch failed"), { cause: { code: "ENOSPC" } })
+    ),
     false,
     "non-network failures must still surface"
   );
@@ -174,6 +194,11 @@ test("installProcessCrashGuard() with no logger swallows aborts instead of dying
     process.emit(
       "unhandledRejection",
       Object.assign(new Error("request_signal_aborted"), { name: "AbortError" }),
+      Promise.resolve()
+    );
+    process.emit(
+      "unhandledRejection",
+      Object.assign(new Error("combo-per-model-timeout"), { name: "AbortError" }),
       Promise.resolve()
     );
     console.log("ALIVE");
@@ -204,7 +229,11 @@ test("installProcessCrashGuard still crashes on genuine errors (no over-swallowi
     process.emit("uncaughtException", new Error("genuine failure"), "uncaughtException");
     console.log("SHOULD_NOT_REACH");
   `;
-  const { status, stdout, stderr: _stderr } = await new Promise((resolve, reject) => {
+  const {
+    status,
+    stdout,
+    stderr: _stderr,
+  } = await new Promise((resolve, reject) => {
     const child = spawn(process.execPath, ["--input-type=module", "-e", script, guardPath], {
       stdio: ["ignore", "pipe", "pipe"],
     });

@@ -78,7 +78,8 @@ test("Meta-Orc refreshes 401 but never burns refresh attempts on an ambiguous 40
 
 test("Meta-Orc fails over quickly instead of retrying the same stalled target", () => {
   assert.deepEqual(resolveMetaOrcFailoverConfig({}), {
-    targetTimeoutMs: 12_000,
+    targetTimeoutMs: 8_000,
+    comboTimeoutMs: 35_000,
     maxRetries: 0,
     retryDelayMs: 0,
     fallbackDelayMs: 0,
@@ -90,6 +91,14 @@ test("Meta-Orc fails over quickly instead of retrying the same stalled target", 
   assert.equal(
     resolveMetaOrcFailoverConfig({ OMNIROUTE_META_ORC_TARGET_TIMEOUT_MS: "120000" })
       .targetTimeoutMs,
+    60_000
+  );
+  assert.equal(
+    resolveMetaOrcFailoverConfig({ OMNIROUTE_META_ORC_COMBO_TIMEOUT_MS: "1000" }).comboTimeoutMs,
+    15_000
+  );
+  assert.equal(
+    resolveMetaOrcFailoverConfig({ OMNIROUTE_META_ORC_COMBO_TIMEOUT_MS: "120000" }).comboTimeoutMs,
     60_000
   );
 });

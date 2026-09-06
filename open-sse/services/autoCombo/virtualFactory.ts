@@ -1017,6 +1017,7 @@ export function compactMetaOrcEffectivePool(
 
 export interface MetaOrcFailoverConfig {
   targetTimeoutMs: number;
+  comboTimeoutMs: number;
   maxRetries: 0;
   retryDelayMs: 0;
   fallbackDelayMs: 0;
@@ -1030,9 +1031,11 @@ export interface MetaOrcFailoverConfig {
 export function resolveMetaOrcFailoverConfig(
   env: Record<string, string | undefined> = process.env
 ): MetaOrcFailoverConfig {
-  const configured = boundedPositiveInt(env.OMNIROUTE_META_ORC_TARGET_TIMEOUT_MS, 12_000, 60_000);
+  const configured = boundedPositiveInt(env.OMNIROUTE_META_ORC_TARGET_TIMEOUT_MS, 8_000, 60_000);
+  const comboBudget = boundedPositiveInt(env.OMNIROUTE_META_ORC_COMBO_TIMEOUT_MS, 35_000, 60_000);
   return {
     targetTimeoutMs: Math.max(3_000, configured),
+    comboTimeoutMs: Math.max(15_000, comboBudget),
     maxRetries: 0,
     retryDelayMs: 0,
     fallbackDelayMs: 0,

@@ -48,7 +48,12 @@ export function isClientAbortError(err) {
   // `AbortError` with an abort-flavoured message. Same benign class as
   // `Error: aborted` — an emitter-left 'error' event on any of these used to
   // kill the process (#fix-dev-server-aborted).
-  if (e.name === "AbortError" && /abort/i.test(String(e.message))) return true;
+  if (
+    e.name === "AbortError" &&
+    (/abort|cancel|disconnect/i.test(String(e.message)) ||
+      String(e.message) === "combo-per-model-timeout")
+  )
+    return true;
   switch (e.code) {
     case "ERR_STREAM_PREMATURE_CLOSE":
     case "ECONNRESET":
@@ -86,9 +91,14 @@ export function isRecoverableUpstreamTransportError(err) {
   const message = String(e.message ?? "");
   return (
     message === "fetch failed" &&
-    ["UND_ERR_CONNECT_TIMEOUT", "UND_ERR_SOCKET", "ECONNRESET", "ETIMEDOUT", "EAI_AGAIN", "ENETUNREACH"].includes(
-      causeCode || code
-    )
+    [
+      "UND_ERR_CONNECT_TIMEOUT",
+      "UND_ERR_SOCKET",
+      "ECONNRESET",
+      "ETIMEDOUT",
+      "EAI_AGAIN",
+      "ENETUNREACH",
+    ].includes(causeCode || code)
   );
 }
 

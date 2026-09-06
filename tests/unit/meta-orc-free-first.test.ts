@@ -177,3 +177,28 @@ test("Nous discovery overrides stale static free metadata when Portal does not m
     await deleteSyncedAvailableModelsForConnection("nous-research", connectionId);
   }
 });
+
+test("Meta-Orc final rung round-robins providers instead of burning one provider consecutively", async () => {
+  const { interleaveMetaOrcTargetsByProvider } =
+    await import("../../open-sse/services/combo/metaOrcFreeFirst.ts");
+  const mk = (provider: string, n: number) => ({
+    ...target([`${provider}-conn`]),
+    executionKey: `${provider}-${n}`,
+    stepId: `${provider}-${n}`,
+    provider,
+    providerId: provider,
+    modelStr: `${provider}/model-${n}`,
+  });
+  const ordered = interleaveMetaOrcTargetsByProvider([
+    mk("nous-research", 1),
+    mk("nous-research", 2),
+    mk("groq", 1),
+    mk("groq", 2),
+    mk("opencode", 1),
+    mk("opencode", 2),
+  ]);
+  assert.deepEqual(
+    ordered.map((entry) => entry.provider),
+    ["nous-research", "groq", "opencode", "nous-research", "groq", "opencode"]
+  );
+});

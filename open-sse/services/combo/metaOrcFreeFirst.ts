@@ -97,6 +97,40 @@ function scopedTarget(
   };
 }
 
+export function interleaveMetaOrcTargetsByProvider(
+  targets: readonly ResolvedComboTarget[]
+): ResolvedComboTarget[] {
+  if (targets.length < 2) return [...targets];
+  const order: string[] = [];
+  const buckets = new Map<string, ResolvedComboTarget[]>();
+  targets.forEach((target, index) => {
+    const provider = String(target.provider || target.providerId || "")
+      .trim()
+      .toLowerCase();
+    const key = provider || `__unknown_${index}`;
+    let bucket = buckets.get(key);
+    if (!bucket) {
+      bucket = [];
+      buckets.set(key, bucket);
+      order.push(key);
+    }
+    bucket.push(target);
+  });
+
+  const result: ResolvedComboTarget[] = [];
+  for (let round = 0; result.length < targets.length; round++) {
+    let added = false;
+    for (const key of order) {
+      const target = buckets.get(key)?.[round];
+      if (!target) continue;
+      result.push(target);
+      added = true;
+    }
+    if (!added) break;
+  }
+  return result;
+}
+
 export function splitMetaOrcTargetByFreeConnections(
   target: ResolvedComboTarget,
   freeConnectionIds: readonly string[]
@@ -179,5 +213,8 @@ export async function enforceMetaOrcFreeFirstOrder(
     (staticModelIsFree(provider, model) ? free : rescue).push(target);
   }
 
-  return [...free, ...rescue];
+  return [
+    ...interleaveMetaOrcTargetsByProvider(free),
+    ...interleaveMetaOrcTargetsByProvider(rescue),
+  ];
 }
