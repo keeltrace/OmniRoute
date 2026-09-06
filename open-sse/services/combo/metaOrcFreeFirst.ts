@@ -55,6 +55,18 @@ function operatorFreeDecision(
 }
 
 function staticModelIsFree(provider: string, model: string): boolean {
+  const normalizedProvider = provider.trim().toLowerCase();
+  const normalizedModel = model.trim().toLowerCase();
+  // OpenCode's public Zen catalog encodes the economic contract in the model id.
+  // The concrete free lineup rotates, so a hardcoded catalog inevitably goes stale;
+  // current/future `*-free` variants remain zero-cost candidates while unavailable
+  // variants simply fall through to the next Meta-Orc target on model-scoped 400s.
+  if (
+    (normalizedProvider === "opencode" || normalizedProvider === "opencode-zen") &&
+    normalizedModel.endsWith("-free")
+  ) {
+    return true;
+  }
   try {
     return classifyTier(provider, model).tier === "free";
   } catch {

@@ -29,6 +29,8 @@ export interface ConnectionResilienceView {
   id: string;
   rateLimitedUntil?: string | null;
   testStatus?: string | null;
+  authType?: string | null;
+  refreshToken?: string | null;
 }
 
 /** Index connection resilience views by id, for the O(1) lookups this filter needs. */
@@ -40,10 +42,19 @@ export function buildConnectionResilienceMap(
   return byId;
 }
 
-function isConnectionResilienceBlocked(connection: ConnectionResilienceView): boolean {
+function isConnectionResilienceBlocked(
+  connection: ConnectionResilienceView,
+  allowRefreshableExpiredOAuth = false
+): boolean {
   if (isAccountUnavailable(connection.rateLimitedUntil)) return true;
   const status = connection.testStatus;
   if (status === "unavailable") return true;
+  if (status === "expired" && allowRefreshableExpiredOAuth) {
+    const isOAuth = String(connection.authType || "").toLowerCase() === "oauth";
+    const hasRefreshToken =
+      typeof connection.refreshToken === "string" && connection.refreshToken.trim().length > 0;
+    if (isOAuth && hasRefreshToken) return false;
+  }
   if (typeof status === "string" && TERMINAL_CONNECTION_STATUSES.has(status)) return true;
   return false;
 }
@@ -52,10 +63,12 @@ function isConnectionEligibleForModel(
   provider: string,
   connectionId: string,
   model: string,
-  connectionsById: Map<string, ConnectionResilienceView>
+  connectionsById: Map<string, ConnectionResilienceView>,
+  allowRefreshableExpiredOAuth = false
 ): boolean {
   const connection = connectionsById.get(connectionId);
-  if (connection && isConnectionResilienceBlocked(connection)) return false;
+  if (connection && isConnectionResilienceBlocked(connection, allowRefreshableExpiredOAuth))
+    return false;
   return !isModelLocked(provider, connectionId, model);
 }
 
@@ -73,7 +86,8 @@ function isConnectionEligibleForModel(
 export function filterResilienceBlockedCandidates<T extends ResilienceFilterCandidate>(
   pool: T[],
   connectionsById: Map<string, ConnectionResilienceView>,
-  skip = false
+  skip = false,
+  allowRefreshableExpiredOAuth = false
 ): T[] {
   if (skip || !Array.isArray(pool) || pool.length === 0) return pool;
 
@@ -93,7 +107,8 @@ export function filterResilienceBlockedCandidates<T extends ResilienceFilterCand
           candidate.provider,
           connectionId,
           candidate.model,
-          connectionsById
+          connectionsById,
+          allowRefreshableExpiredOAuth
         )
       );
       if (allowedConnectionIds.length === 0) {
@@ -113,7 +128,8 @@ export function filterResilienceBlockedCandidates<T extends ResilienceFilterCand
           candidate.provider,
           candidate.connectionId,
           candidate.model,
-          connectionsById
+          connectionsById,
+          allowRefreshableExpiredOAuth
         )
       ) {
         changed = true;

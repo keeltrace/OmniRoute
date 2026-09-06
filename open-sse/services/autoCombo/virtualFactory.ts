@@ -289,12 +289,26 @@ function toExpiryMs(value: unknown): number | null {
   return null;
 }
 
-function hasUsableOAuthToken(conn: VirtualFactoryConn): boolean {
-  if (typeof conn.accessToken !== "string" || conn.accessToken.trim().length === 0) return false;
+export function hasUsableOAuthToken(
+  conn: VirtualFactoryConn,
+  allowRefreshableExpired = false
+): boolean {
+  const accessToken = typeof conn.accessToken === "string" ? conn.accessToken.trim() : "";
+  if (!accessToken) return false;
 
   const expiryMs = toExpiryMs(conn.tokenExpiresAt) ?? toExpiryMs(conn.expiresAt);
+  if (expiryMs === null || expiryMs > Date.now()) return true;
 
-  return expiryMs === null || expiryMs > Date.now();
+  // Meta-Orc is availability-first. An expired OAuth access token with a stored
+  // refresh token is still a viable rescue account because dispatch performs
+  // request-time refresh before the upstream call. Router-only deployments keep
+  // background credential-health cold, so filtering these rows here would make
+  // healthy Claude/Grok subscriptions disappear from the rescue deck forever.
+  return (
+    allowRefreshableExpired &&
+    typeof conn.refreshToken === "string" &&
+    conn.refreshToken.trim().length > 0
+  );
 }
 
 function hasProviderSpecificSessionData(conn: VirtualFactoryConn): boolean {
@@ -318,11 +332,14 @@ function isKeylessEligibleConnection(conn: VirtualFactoryConn): boolean {
   return isCompatibleProviderConnectionId(conn.provider);
 }
 
-function hasUsableConnectionCredential(conn: VirtualFactoryConn): boolean {
+function hasUsableConnectionCredential(
+  conn: VirtualFactoryConn,
+  allowRefreshableExpiredOAuth = false
+): boolean {
   const hasApiKey = typeof conn.apiKey === "string" && conn.apiKey.trim().length > 0;
   return (
     hasApiKey ||
-    hasUsableOAuthToken(conn) ||
+    hasUsableOAuthToken(conn, allowRefreshableExpiredOAuth) ||
     hasProviderSpecificSessionData(conn) ||
     isKeylessEligibleConnection(conn)
   );
@@ -645,7 +662,9 @@ export async function prepareVirtualAutoComboInputs(
     }
   }
 
-  const validConnections = runtimeConnections.filter(hasUsableConnectionCredential);
+  const validConnections = runtimeConnections.filter((connection) =>
+    hasUsableConnectionCredential(connection, options.bypassEconomicGuards === true)
+  );
 
   const candidatePool: VirtualAutoComboCandidate[] = [];
   const registry = getProviderRegistry();
@@ -751,7 +770,12 @@ export async function prepareVirtualAutoComboInputs(
       ),
     ];
 
-    const resilienceFilteredPool = filterResilienceBlockedCandidates(pool, connectionsById, skip);
+    const resilienceFilteredPool = filterResilienceBlockedCandidates(
+      pool,
+      connectionsById,
+      skip,
+      options.bypassEconomicGuards === true
+    );
     if (resilienceFilteredPool !== pool) pool = resilienceFilteredPool;
 
     // #6512: when hidePaidModels is on, exclude paid-only backends from every auto/* pool.

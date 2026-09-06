@@ -2,9 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { resolveAutoRoutingState } from "../../src/sse/handlers/autoRouting.ts";
-import {
-  splitMetaOrcTargetByFreeConnections,
-} from "../../open-sse/services/combo/metaOrcFreeFirst.ts";
+import { splitMetaOrcTargetByFreeConnections } from "../../open-sse/services/combo/metaOrcFreeFirst.ts";
 import type { ResolvedComboTarget } from "../../open-sse/services/combo/types.ts";
 
 test("chat:free aliases to the resilient Meta-Orc route", async () => {
@@ -47,10 +45,9 @@ function target(allowedConnectionIds: string[]): ResolvedComboTarget {
 }
 
 test("mixed free/paid accounts become separate ordered attempts", () => {
-  const split = splitMetaOrcTargetByFreeConnections(
-    target(["paid-account", "free-account"]),
-    ["free-account"]
-  );
+  const split = splitMetaOrcTargetByFreeConnections(target(["paid-account", "free-account"]), [
+    "free-account",
+  ]);
 
   assert.equal(split.free.length, 1);
   assert.equal(split.rescue.length, 1);
@@ -67,11 +64,9 @@ test("all-free account scope has no paid rescue duplicate", () => {
   assert.deepEqual(split.rescue, []);
 });
 
-
 test("Meta-Orc moves static-free Nous ahead of an earlier paid candidate", async () => {
-  const { enforceMetaOrcFreeFirstOrder } = await import(
-    "../../open-sse/services/combo/metaOrcFreeFirst.ts"
-  );
+  const { enforceMetaOrcFreeFirstOrder } =
+    await import("../../open-sse/services/combo/metaOrcFreeFirst.ts");
   const paid = {
     ...target(["paid-1"]),
     executionKey: "paid-step",
@@ -93,4 +88,29 @@ test("Meta-Orc moves static-free Nous ahead of an earlier paid candidate", async
   assert.equal(ordered[0]?.provider, "nous-research");
   assert.equal(ordered[0]?.modelStr, "nous-research/Hermes-4-405B");
   assert.equal(ordered.at(-1)?.provider, "openai");
+});
+
+test("Meta-Orc treats rotating OpenCode *-free ids as free before paid rescue", async () => {
+  const { enforceMetaOrcFreeFirstOrder } =
+    await import("../../open-sse/services/combo/metaOrcFreeFirst.ts");
+  const paid = {
+    ...target(["paid-1"]),
+    executionKey: "paid-opus",
+    provider: "claude",
+    providerId: "claude",
+    modelStr: "claude/claude-opus-5",
+  };
+  const opencode = {
+    ...target([]),
+    executionKey: "oc-free",
+    provider: "opencode",
+    providerId: "opencode",
+    modelStr: "opencode/mimo-v2.5-free",
+    connectionId: "noauth",
+    allowedConnectionIds: undefined,
+  };
+  const ordered = await enforceMetaOrcFreeFirstOrder([paid, opencode]);
+  assert.equal(ordered[0]?.provider, "opencode");
+  assert.equal(ordered[0]?.modelStr, "opencode/mimo-v2.5-free");
+  assert.equal(ordered.at(-1)?.provider, "claude");
 });
