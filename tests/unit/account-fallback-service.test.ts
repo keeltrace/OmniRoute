@@ -263,6 +263,18 @@ test("checkFallbackError keeps generic 400 client errors terminal", () => {
   });
 });
 
+test("checkFallbackError treats 413 request/model capacity as immediate fallback without cooldown", () => {
+  const result = checkFallbackError(
+    413,
+    "Request too large for model openai/gpt-oss-120b: TPM Limit 8000, Requested 35193"
+  );
+  assert.deepEqual(result, {
+    shouldFallback: true,
+    cooldownMs: 0,
+    reason: RateLimitReason.MODEL_CAPACITY,
+  });
+});
+
 test("checkFallbackError treats a genuine 400 model-access error as combo fallback", () => {
   const result = checkFallbackError(400, "The model `foo` does not exist or is not available");
   assert.equal(result.shouldFallback, true);
@@ -1637,6 +1649,25 @@ test.after(() => {
   fs.rmSync(TEST_DATA_DIR_10460, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
+test("413 request capacity does not poison the provider connection", async () => {
+  await resetStorage10460();
+  const connId = await seedConn10460("groq");
+
+  const result = await auth.markAccountUnavailable(
+    connId,
+    413,
+    "Request too large for model openai/gpt-oss-120b: TPM Limit 8000, Requested 35193",
+    "groq",
+    "openai/gpt-oss-120b"
+  );
+
+  assert.strictEqual(result.shouldFallback, true);
+  assert.strictEqual(result.cooldownMs, 0);
+  const after = await providersDb.getProviderConnectionById(connId);
+  assert.strictEqual(after.testStatus, "active");
+  assert.ok(!after.rateLimitedUntil, "413 must not cool the whole Groq connection");
+});
+
 test("#10460: model-unsupported 400 returns shouldFallback:false (no account cooldown)", async () => {
   await resetStorage10460();
   const connId = await seedConn10460("github");
@@ -2024,7 +2055,7 @@ test("checkFallbackError: compatible node empty wallet without billing-suspend p
     "You have insufficient balance, please recharge your account",
     0,
     null,
-    MOONSHOT_COMPAT,
+    MOONSHOT_COMPAT
   );
   assert.equal(result.creditsExhausted, true);
   assert.equal(result.reason, RateLimitReason.QUOTA_EXHAUSTED);
@@ -2038,11 +2069,22 @@ test("isDailyQuotaExhausted detects organization TPD rate limit", () => {
 
 test("checkFallbackError: TPD with node clock uses that instant, not host midnight", () => {
   const now = Date.parse("2026-09-02T07:30:00Z");
-  const result = checkFallbackError(429, MOONSHOT_TPD, 0, null, MOONSHOT_COMPAT, null, null, null, null, {
-    timezone: "Asia/Shanghai",
-    hour: 0,
-    nowMs: now,
-  });
+  const result = checkFallbackError(
+    429,
+    MOONSHOT_TPD,
+    0,
+    null,
+    MOONSHOT_COMPAT,
+    null,
+    null,
+    null,
+    null,
+    {
+      timezone: "Asia/Shanghai",
+      hour: 0,
+      nowMs: now,
+    }
+  );
   assert.equal(result.dailyQuotaExhausted, true);
   assert.equal(result.cooldownMs, Date.parse("2026-09-02T16:00:00Z") - now);
   assert.equal(result.reason, RateLimitReason.QUOTA_EXHAUSTED);
