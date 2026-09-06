@@ -14,7 +14,7 @@ function conn(overrides: Record<string, unknown> = {}) {
     tokenExpiresAt: expired,
     expiresAt: expired,
     ...overrides,
-  } as any;
+  } as Parameters<typeof hasUsableOAuthToken>[0];
 }
 
 test("regular auto rejects expired OAuth access token", () => {

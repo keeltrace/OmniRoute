@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { shouldFallbackPinnedStatus } from "../../open-sse/services/combo/dispatchPrelude.ts";
-import { applyComboTargetExhaustion } from "../../open-sse/services/combo/targetExhaustion.ts";
+import {
+  applyComboTargetExhaustion,
+  type ApplyComboTargetExhaustionOptions,
+  type ComboExhaustionSets,
+} from "../../open-sse/services/combo/targetExhaustion.ts";
+import type { ResolvedComboTarget } from "../../open-sse/services/combo/types.ts";
 
 const log = {
   info() {},
@@ -10,19 +15,28 @@ const log = {
   error() {},
 };
 
-function target(provider: string, connectionId: string, modelStr: string) {
+function target(provider: string, connectionId: string, modelStr: string): ResolvedComboTarget {
   return {
+    kind: "model",
+    stepId: `${provider}:${modelStr}`,
     provider,
+    providerId: provider,
     connectionId,
     modelStr,
     executionKey: `${provider}:${connectionId}:${modelStr}`,
-  } as any;
+    weight: 1,
+    label: null,
+  };
 }
 
-function authFailure(targetValue: any, sets: any) {
+function authFailure(targetValue: ResolvedComboTarget, sets: ComboExhaustionSets) {
   return applyComboTargetExhaustion(targetValue, {
     result: { status: 401, headers: new Headers() },
-    fallbackResult: { shouldFallback: true, cooldownMs: 0, reason: "auth_error" } as any,
+    fallbackResult: {
+      shouldFallback: true,
+      cooldownMs: 0,
+      reason: "auth_error",
+    } as ApplyComboTargetExhaustionOptions["fallbackResult"],
     errorText: "Your API key is invalid",
     rawModel: targetValue.modelStr,
     isTokenLimitBreach: false,
@@ -48,9 +62,6 @@ test("401 exhausts only the failing connection, preserving sibling provider acco
     transientRateLimitedProviders: new Set<string>(),
   };
   const nousA = target("nous-research", "conn-a", "inclusionai/ling-3.0-flash-fin:free");
-  const nousB = target("nous-research", "conn-b", "upstage/solar-pro4:free");
-  const opencode = target("opencode", "conn-b", "big-pickle");
-
   assert.equal(authFailure(nousA, sets), true);
   assert.deepEqual([...sets.exhaustedConnections], ["nous-research:conn-a"]);
   assert.equal(sets.exhaustedProviders.has("nous-research"), false);
