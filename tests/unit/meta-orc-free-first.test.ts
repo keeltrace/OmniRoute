@@ -114,3 +114,66 @@ test("Meta-Orc treats rotating OpenCode *-free ids as free before paid rescue", 
   assert.equal(ordered[0]?.modelStr, "opencode/mimo-v2.5-free");
   assert.equal(ordered.at(-1)?.provider, "claude");
 });
+
+test("generic discovery does not erase curated Groq free economics", async () => {
+  const { enforceMetaOrcFreeFirstOrder } =
+    await import("../../open-sse/services/combo/metaOrcFreeFirst.ts");
+  const { replaceSyncedAvailableModelsForConnection, deleteSyncedAvailableModelsForConnection } =
+    await import("../../src/lib/db/models.ts");
+  const connectionId = "groq-live-economics";
+  await replaceSyncedAvailableModelsForConnection("groq", connectionId, [
+    { id: "openai/gpt-oss-120b", name: "GPT OSS 120B" },
+  ]);
+  try {
+    const paid = {
+      ...target(["paid-1"]),
+      executionKey: "paid-openai",
+      provider: "openai",
+      providerId: "openai",
+      modelStr: "openai/gpt-5",
+    };
+    const groq = {
+      ...target([connectionId]),
+      executionKey: "groq-free",
+      provider: "groq",
+      providerId: "groq",
+      modelStr: "groq/openai/gpt-oss-120b",
+    };
+    const ordered = await enforceMetaOrcFreeFirstOrder([paid, groq]);
+    assert.equal(ordered[0]?.provider, "groq");
+  } finally {
+    await deleteSyncedAvailableModelsForConnection("groq", connectionId);
+  }
+});
+
+test("Nous discovery overrides stale static free metadata when Portal does not mark the model free", async () => {
+  const { enforceMetaOrcFreeFirstOrder } =
+    await import("../../open-sse/services/combo/metaOrcFreeFirst.ts");
+  const { replaceSyncedAvailableModelsForConnection, deleteSyncedAvailableModelsForConnection } =
+    await import("../../src/lib/db/models.ts");
+  const connectionId = "nous-live-paid-verdict";
+  await replaceSyncedAvailableModelsForConnection("nous-research", connectionId, [
+    { id: "Hermes-4-405B", name: "Hermes 4 405B" },
+  ]);
+  try {
+    const paid = {
+      ...target(["paid-1"]),
+      executionKey: "paid-openai",
+      provider: "openai",
+      providerId: "openai",
+      modelStr: "openai/gpt-5",
+    };
+    const nous = {
+      ...target([connectionId]),
+      executionKey: "nous-stale-static",
+      provider: "nous-research",
+      providerId: "nous-research",
+      modelStr: "nous-research/Hermes-4-405B",
+    };
+    const ordered = await enforceMetaOrcFreeFirstOrder([paid, nous]);
+    assert.equal(ordered[0]?.provider, "openai");
+    assert.equal(ordered[1]?.provider, "nous-research");
+  } finally {
+    await deleteSyncedAvailableModelsForConnection("nous-research", connectionId);
+  }
+});

@@ -54,6 +54,16 @@ function operatorFreeDecision(
   return "unspecified";
 }
 
+function discoveryEconomicsAreAuthoritative(provider: string): boolean {
+  const normalized = provider.trim().toLowerCase();
+  // Nous Portal explicitly publishes the current free recommendation set, so
+  // a discovered Nous model without isFree=true is a real paid/rescue verdict.
+  // Generic /models endpoints (Groq, W&B, etc.) only prove availability and
+  // carry no economic meaning; absence of isFree there must not erase the
+  // verified static free catalog.
+  return normalized === "nous-research" || normalized === "nous";
+}
+
 function staticModelIsFree(provider: string, model: string): boolean {
   const normalizedProvider = provider.trim().toLowerCase();
   const normalizedModel = model.trim().toLowerCase();
@@ -152,9 +162,15 @@ export async function enforceMetaOrcFreeFirstOrder(
     );
 
     if (discoveredIds.length > 0) {
-      const split = splitMetaOrcTargetByFreeConnections(target, freeIds);
-      free.push(...split.free);
-      rescue.push(...split.rescue);
+      if (freeIds.length > 0 || discoveryEconomicsAreAuthoritative(provider)) {
+        const split = splitMetaOrcTargetByFreeConnections(target, freeIds);
+        free.push(...split.free);
+        rescue.push(...split.rescue);
+      } else {
+        // Generic discovery proved that the model exists, not what it costs.
+        // Preserve curated economics instead of treating missing isFree as false.
+        (staticModelIsFree(provider, model) ? free : rescue).push(target);
+      }
       continue;
     }
 
