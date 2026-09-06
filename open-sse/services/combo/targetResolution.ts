@@ -27,6 +27,7 @@
 import { isModelLocked } from "../accountFallback.ts";
 import { parseAutoPrefix } from "../autoCombo/autoPrefix.ts";
 import { handlePipelineCombo, buildPipelineResponse } from "../autoCombo/pipelineRouter.ts";
+import { isMetaOrcCombo } from "../autoCombo/metaOrcRoute.ts";
 import type { resolveComboSetupConfig } from "../comboConfig.ts";
 import { orderTargetsByEvalScores } from "../evalRouting.ts";
 import { parseModel } from "../model.ts";
@@ -63,6 +64,7 @@ import {
   expandProviderWildcardsInCombo,
   expandProviderWildcardsInCollection,
 } from "./providerWildcard.ts";
+import { enforceMetaOrcFreeFirstOrder } from "./metaOrcFreeFirst.ts";
 import { preScreenTargets, type PreScreenResult } from "./quotaStrategies.ts";
 import { resolveAutoStrategyOrder, type ResolveAutoStrategyDeps } from "./resolveAutoStrategy.ts";
 import {
@@ -501,6 +503,7 @@ async function applyContinuityFilters(
   // #8488 / #8494: fail closed when hard capability filters empty the pool.
   // Opt-in escape hatch: combo.config.compatFilterFailOpen OR settings.compatFilterFailOpen.
   const compatFilterFailOpen =
+    isMetaOrcCombo(combo) ||
     (config as { compatFilterFailOpen?: unknown }).compatFilterFailOpen === true ||
     (settings as { compatFilterFailOpen?: unknown } | null | undefined)?.compatFilterFailOpen ===
       true;
@@ -762,6 +765,18 @@ export async function resolveComboTargetPipeline(
     continuity.sticky.stuck,
     autoUsedExplicitRouter
   );
+
+  // Meta-Orc is availability-first: reassert the economic partition AFTER
+  // stickiness, task-aware ranking and cache affinity so none can promote a
+  // paid target ahead of an available free target. Paid targets remain as the
+  // rescue tail rather than being filtered out.
+  if (isMetaOrcCombo(combo)) {
+    orderedTargets = await enforceMetaOrcFreeFirstOrder(orderedTargets);
+    log.info(
+      "AUTO",
+      `Meta-Orc final free-first deck: ${orderedTargets.length} targets; first=${orderedTargets[0]?.modelStr || "none"}`
+    );
+  }
 
   // Parallel pre-screen: check provider profiles and model availability for all targets
   // Only runs for priority strategy where sequential checking causes latency

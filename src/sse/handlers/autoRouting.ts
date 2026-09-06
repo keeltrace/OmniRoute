@@ -15,6 +15,7 @@ import {
   type ModelFamily,
 } from "@omniroute/open-sse/services/autoCombo/modelFamily.ts";
 import { getCachedSettings } from "@/lib/db/readCache";
+import { META_ORC_AUTO_ID, normalizeMetaOrcAlias } from "@omniroute/open-sse/services/autoCombo/metaOrcRoute.ts";
 import * as log from "../utils/logger";
 
 export type AutoRoutingState = {
@@ -71,7 +72,9 @@ async function applyAutoPrefix(
       await import("@omniroute/open-sse/services/autoCombo/autoPrefix.ts");
     const parsed = parseAutoPrefix(model);
     if (!parsed.valid) {
-      if (!state.spec) log.warn("AUTO", `Invalid auto prefix format: ${model}`);
+      if (!state.spec && !Object.prototype.hasOwnProperty.call(AUTO_TEMPLATE_VARIANTS, model)) {
+        log.warn("AUTO", `Invalid auto prefix format: ${model}`);
+      }
       return state;
     }
 
@@ -95,15 +98,16 @@ async function applyAutoPrefix(
 }
 
 export async function resolveAutoRoutingState(model: string): Promise<AutoRoutingState> {
-  const isAutoRouting = model === "auto" || model.startsWith("auto/");
-  const classified = classifyAutoModel(model);
+  const normalizedModel = normalizeMetaOrcAlias(model);
+  const isAutoRouting = normalizedModel === "auto" || normalizedModel.startsWith("auto/");
+  const classified = classifyAutoModel(normalizedModel);
 
   if (!isAutoRouting) {
-    return { model, ...classified, isAutoRouting, response: null };
+    return { model: normalizedModel, ...classified, isAutoRouting, response: null };
   }
 
   const settings = await getCachedSettings().catch(() => ({}) as Record<string, unknown>);
-  if (settings?.autoRoutingEnabled === false) {
+  if (settings?.autoRoutingEnabled === false && normalizedModel !== META_ORC_AUTO_ID) {
     return {
       model,
       ...classified,
@@ -115,8 +119,8 @@ export async function resolveAutoRoutingState(model: string): Promise<AutoRoutin
     };
   }
 
-  const resolved = await applyAutoPrefix(model, classified, settings);
-  return { model, ...classified, ...resolved, isAutoRouting, response: null };
+  const resolved = await applyAutoPrefix(normalizedModel, classified, settings);
+  return { model: normalizedModel, ...classified, ...resolved, isAutoRouting, response: null };
 }
 
 export async function createVirtualAutoCombo(

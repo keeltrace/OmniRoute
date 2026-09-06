@@ -604,6 +604,8 @@ export async function prepareVirtualAutoComboInputs(
   options: {
     includeResolvedCapabilities?: boolean;
     resolutionSnapshot?: ModelCapabilityResolutionSnapshot;
+    /** Meta-Orc keeps paid rescue capacity even when global strict/hide-paid policy is enabled. */
+    bypassEconomicGuards?: boolean;
   } = {},
   skip = false // #9133 — inspector opt-out, see filterResilienceBlockedCandidates
 ): Promise<PreparedVirtualAutoComboInputs> {
@@ -755,7 +757,7 @@ export async function prepareVirtualAutoComboInputs(
     // #6512: when hidePaidModels is on, exclude paid-only backends from every auto/* pool.
     const paidFilteredPool = filterPaidOnlyCandidates(
       pool,
-      settings.hidePaidModels === true,
+      options.bypassEconomicGuards !== true && settings.hidePaidModels === true,
       resolveExplicitTierOverride
     );
     if (paidFilteredPool !== pool) pool = paidFilteredPool;
@@ -773,7 +775,8 @@ export async function prepareVirtualAutoComboInputs(
       resolveOperatorTier: resolveExplicitTierOverride,
       isDiscoveryEvidenceFresh: isProviderModelDiscoveryFresh,
     };
-    const strictZeroCostOn = settings.freeAccessPolicy === "strict";
+    const strictZeroCostOn =
+      options.bypassEconomicGuards !== true && settings.freeAccessPolicy === "strict";
     const strictFilteredPool = filterStrictZeroCostCandidates(pool, {
       // Inspector skips enforcement but still reports the same exclusion verdicts.
       enabled: strictZeroCostOn && !skip,
@@ -1182,6 +1185,8 @@ export async function createVirtualAutoCombo(
   apiKeyId?: string,
   autoChannel?: string
 ): Promise<VirtualAutoCombo> {
-  const prepared = await prepareVirtualAutoComboInputs();
+  const prepared = await prepareVirtualAutoComboInputs({
+    bypassEconomicGuards: autoChannel === "auto/meta-orc",
+  });
   return createVirtualAutoComboFromPrepared(prepared, variant, spec, apiKeyId, autoChannel);
 }

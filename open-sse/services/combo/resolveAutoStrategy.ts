@@ -11,6 +11,7 @@ import {
   parseRequestBudgetFallback,
 } from "../autoCombo/requestControls.ts";
 import { selectWithStrategy } from "../autoCombo/routerStrategy.ts";
+import { isMetaOrcCombo } from "../autoCombo/metaOrcRoute.ts";
 import { buildComplexityRoutingHint } from "../autoCombo/complexityRouter";
 import { getModePack } from "../autoCombo/modePacks.ts";
 import { recordComboIntent } from "../comboMetrics.ts";
@@ -157,10 +158,12 @@ export async function resolveAutoStrategyOrder(
   } = deps;
   let orderedTargets = deps.orderedTargets;
   let autoUsedExplicitRouter = false;
+  const metaOrc = isMetaOrcCombo(combo);
 
   const requestHasTools = Array.isArray(body?.tools) && body.tools.length > 0;
   let eligibleTargets = [...orderedTargets];
   const compatFilterFailOpen =
+    metaOrc ||
     config?.compatFilterFailOpen === true ||
     (settings as { compatFilterFailOpen?: unknown } | null | undefined)?.compatFilterFailOpen ===
       true;
@@ -262,9 +265,9 @@ export async function resolveAutoStrategyOrder(
   // request. Unknown/garbage header values are ignored so the saved config is
   // preserved.
   const requestBudgetCap = parseRequestBudgetCap(relayOptions?.budgetCap);
-  const budgetCap = requestBudgetCap ?? configBudgetCap;
+  const budgetCap = metaOrc ? undefined : requestBudgetCap ?? configBudgetCap;
   const requestBudgetFallback = parseRequestBudgetFallback(relayOptions?.budgetFallback);
-  const budgetFallback = requestBudgetFallback ?? configBudgetFallback;
+  const budgetFallback = metaOrc ? "cheapest" : requestBudgetFallback ?? configBudgetFallback;
   const requestModePack = resolveRequestModePack(relayOptions?.mode);
   const modePack = requestModePack.override ? requestModePack.modePack : configModePack;
   // #7008: `weights` must track the *effective* (post-override) modePack, not just
@@ -301,7 +304,7 @@ export async function resolveAutoStrategyOrder(
   }
 
   const autoCandidateResilienceSettings =
-    relayOptions?.bypassProviderQuotaPolicy === true
+    metaOrc || relayOptions?.bypassProviderQuotaPolicy === true
       ? {
           ...resilienceSettings,
           quotaPreflight: {

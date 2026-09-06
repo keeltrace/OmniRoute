@@ -44,6 +44,7 @@ export const AUTO_TEMPLATE_VARIANTS: Record<string, AutoVariant | undefined> = {
   "auto/claude-opus": "smart",
   "auto/claude-sonnet": "coding",
   "auto/best-free": "cheap",
+  "auto/meta-orc": "cheap",
   // Subscription-first routing (see `subscriptionLadder.ts`). `auto/subscription`
   // maps to no weight variant on purpose: its pool is already restricted to
   // plan-included connections, so the scorer should rank them on merit rather
@@ -198,10 +199,18 @@ export async function createBuiltinAutoCombo(
   const materialize = (
     variant: AutoVariant | undefined,
     spec?: Parameters<typeof createVirtualAutoCombo>[1]
-  ) =>
-    prepared
+  ) => {
+    // Meta-Orc must preserve paid rescue even when the caller handed us a
+    // snapshot prepared under hidePaidModels/STRICT_ZERO_COST. Rebuild this one
+    // route with its route-scoped economic bypass instead of inheriting a
+    // potentially pre-filtered pool.
+    if (modelStr === "auto/meta-orc") {
+      return createVirtualAutoCombo(variant, spec, undefined, modelStr);
+    }
+    return prepared
       ? createVirtualAutoComboFromPrepared(prepared, variant, spec)
       : createVirtualAutoCombo(variant, spec);
+  };
 
   const spec = resolveBuiltinAutoSpec(modelStr, suffix);
 
