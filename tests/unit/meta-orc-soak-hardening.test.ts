@@ -69,6 +69,7 @@ test("Meta-Orc 403 classifier distinguishes credential, quota, transport, and mo
 
 test("Meta-Orc refreshes 401 but never burns refresh attempts on an ambiguous 403", () => {
   assert.equal(shouldAttemptCredentialRefresh(401, "auto/meta-orc"), true);
+  assert.equal(shouldAttemptCredentialRefresh(401, "auto/meta-orc", "noauth"), false);
   assert.equal(shouldAttemptCredentialRefresh(403, "auto/meta-orc"), false);
   assert.equal(shouldAttemptCredentialRefresh(403, "some-other-combo"), true);
   assert.equal(shouldAttemptCredentialRefresh(500, "auto/meta-orc"), false);
@@ -168,4 +169,26 @@ test("Meta-Orc Cloudflare 1010 skips this connection for the request without cal
   assert.equal(exhausted, false);
   assert.ok(sets.exhaustedConnections.has("nous-research:nous-research-conn"));
   assert.equal(sets.exhaustedProviders.size, 0);
+});
+
+test("Meta-Orc synthetic no-auth 401 stays model-scoped", () => {
+  const sets = exhaustionSets();
+  const noauthTarget = { ...target("opencode"), connectionId: "noauth" };
+  const exhausted = applyComboTargetExhaustion(noauthTarget, {
+    result: { status: 401 },
+    fallbackResult: { shouldFallback: true },
+    errorText: "Model hy3-free is not supported",
+    rawModel: "hy3-free",
+    isTokenLimitBreach: false,
+    allAccountsRateLimited: false,
+    requestScopedFailure: false,
+    sets,
+    log: silentLog,
+    tag: "COMBO",
+    exhaustedLogLevel: "info",
+    metaOrc403: true,
+  });
+  assert.equal(exhausted, false);
+  assert.equal(sets.exhaustedProviders.size, 0);
+  assert.equal(sets.exhaustedConnections.size, 0);
 });

@@ -47,7 +47,15 @@ export function classifyMetaOrc403(
 }
 
 /** Meta-Orc never spends three refresh attempts on an ambiguous 403. */
-export function shouldAttemptCredentialRefresh(status: number, comboName?: string | null): boolean {
+export function shouldAttemptCredentialRefresh(
+  status: number,
+  comboName?: string | null,
+  connectionId?: string | null
+): boolean {
+  // Synthetic no-auth routes have no token/key to refresh. Retrying a refresh
+  // three times only adds latency and can incorrectly turn one retired model
+  // into a connection-wide failure.
+  if (connectionId === "noauth") return false;
   if (status === 401) return true;
   if (status === 403) return comboName !== "auto/meta-orc";
   return false;

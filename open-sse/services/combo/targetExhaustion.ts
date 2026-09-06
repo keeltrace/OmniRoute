@@ -202,6 +202,18 @@ export function applyComboTargetExhaustion(
   const quotaMisclassifiedAsAuth = isQuotaOrCreditsError(errorText, structuredError);
   const metaOrc403Scope =
     opts.metaOrc403 === true ? classifyMetaOrc403(result.status, errorText, structuredError) : null;
+  const metaOrcSyntheticNoAuthFailure =
+    opts.metaOrc403 === true &&
+    target.connectionId === "noauth" &&
+    AUTH_LEVEL_ERROR_STATUSES.includes(result.status);
+
+  if (metaOrcSyntheticNoAuthFailure) {
+    log.info(
+      tag,
+      `Meta-Orc synthetic no-auth ${result.status} for ${provider || "unknown"}/${opts.rawModel} — treating as model-scoped and keeping sibling models eligible`
+    );
+    return false;
+  }
 
   if (metaOrc403Scope === "model") {
     log.info(

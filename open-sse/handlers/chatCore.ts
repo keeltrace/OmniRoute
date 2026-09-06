@@ -3964,7 +3964,11 @@ export async function handleChatCore({
   // deactivation on refresh failure (#9817). The 401/403 then flows into
   // the normal providerFailure classification (record-only in probe mode).
   if (
-    shouldAttemptCredentialRefresh(providerResponse.status, comboName) &&
+    shouldAttemptCredentialRefresh(
+      providerResponse.status,
+      comboName,
+      typeof credentials?.connectionId === "string" ? credentials.connectionId : null
+    ) &&
     !hadStreamOptions && // Skip refresh if failure may be from stream_options removal, not auth
     !(await shouldIsolateProbeFailures())
   ) {
