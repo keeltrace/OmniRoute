@@ -24,6 +24,7 @@ import {
 } from "../../services/apiKeyRotator.ts";
 import { isModelUnavailableError } from "../../services/modelFamilyFallback.ts";
 import { updateProviderConnection } from "@/lib/db/providers";
+import { classifyMetaOrc403 } from "../../services/metaOrc403.ts";
 
 type KeyHealthLog = {
   warn?: (tag: string, message: string) => void;
@@ -49,8 +50,11 @@ function isModelCapabilityFailure(status: number, failureDetail: string): boolea
   return isModelUnavailableError(status === 401 ? 403 : status, normalizedDetail);
 }
 
-function isCredentialFailure(status: number, failureDetail: string): boolean {
+function isCredentialFailure(status: number, failureDetail: string, metaOrc403 = false): boolean {
   if (status !== 401 && status !== 403) return false;
+  if (metaOrc403 && status === 403 && classifyMetaOrc403(status, failureDetail) !== "credential") {
+    return false;
+  }
   if (isModelCapabilityFailure(status, failureDetail)) return false;
   if (status === 401) return true;
   return CREDENTIAL_FAILURE_PATTERNS.some((pattern) => pattern.test(failureDetail));
@@ -61,7 +65,8 @@ export function recordKeyHealthStatus(
   creds: Record<string, unknown> | null | undefined,
   log?: KeyHealthLog,
   transport?: string,
-  failureDetail = ""
+  failureDetail = "",
+  metaOrc403 = false
 ): void {
   // CLIProxyAPI owns a shared external credential pool. Its auth failures cannot be
   // attributed to the native OmniRoute connection selected before proxy dispatch.
@@ -84,7 +89,7 @@ export function recordKeyHealthStatus(
 
   trackConnectionExtraKeys(connId, extraKeys);
 
-  if (isCredentialFailure(status, failureDetail)) {
+  if (isCredentialFailure(status, failureDetail, metaOrc403)) {
     const updatedHealth = recordKeyFailure(connId, currentKeyId);
     log?.warn?.(
       "AUTH",

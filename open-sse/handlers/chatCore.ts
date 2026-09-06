@@ -264,6 +264,7 @@ import { updateProviderConnection, getProviderConnectionById } from "@/lib/db/pr
 import { wasRefreshTokenRotated } from "@omniroute/open-sse/services/refreshSerializer.ts";
 import { connectionHasExtraKeys } from "../services/apiKeyRotator.ts";
 import { recordKeyHealthStatus as recordKeyHealthStatusFor } from "./chatCore/keyHealth.ts";
+import { shouldAttemptCredentialRefresh } from "../services/metaOrc403.ts";
 import { getSkillsModelIdForFormat } from "./chatCore/skillsFormat.ts";
 import { readNonStreamingResponseBody } from "./chatCore/nonStreamingResponseBody.ts";
 import {
@@ -742,7 +743,15 @@ export async function handleChatCore({
     creds: Record<string, unknown> | null | undefined,
     transport?: string,
     failureDetail?: string
-  ): void => recordKeyHealthStatusFor(status, creds, log, transport, failureDetail);
+  ): void =>
+    recordKeyHealthStatusFor(
+      status,
+      creds,
+      log,
+      transport,
+      failureDetail,
+      comboName === "auto/meta-orc"
+    );
   // ── Phase 9.2: Idempotency check ──
   // Resolve the idempotency key once here and reuse it at the Phase 9.2 save site below,
   // rather than re-deriving it. (#3821-review LEDGER-6)
@@ -3955,8 +3964,7 @@ export async function handleChatCore({
   // deactivation on refresh failure (#9817). The 401/403 then flows into
   // the normal providerFailure classification (record-only in probe mode).
   if (
-    (providerResponse.status === HTTP_STATUS.UNAUTHORIZED ||
-      providerResponse.status === HTTP_STATUS.FORBIDDEN) &&
+    shouldAttemptCredentialRefresh(providerResponse.status, comboName) &&
     !hadStreamOptions && // Skip refresh if failure may be from stream_options removal, not auth
     !(await shouldIsolateProbeFailures())
   ) {

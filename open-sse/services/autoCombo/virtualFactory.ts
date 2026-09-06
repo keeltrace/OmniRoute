@@ -916,6 +916,105 @@ export function computeSnapshotWeights(
   return scores;
 }
 
+export interface MetaOrcPoolLimits {
+  maxFreePerProvider?: number;
+  maxRescuePerProvider?: number;
+  maxTotal?: number;
+}
+
+function boundedPositiveInt(value: unknown, fallback: number, max: number): number {
+  const parsed = typeof value === "number" ? value : Number.parseInt(String(value ?? ""), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.min(Math.floor(parsed), max) : fallback;
+}
+
+function isMetaOrcFreeCandidate(candidate: VirtualAutoComboCandidate): boolean {
+  const explicit = resolveExplicitTierOverride(candidate.provider, candidate.model);
+  if (explicit !== undefined) return explicit === "free";
+  if (Array.isArray(candidate.freeConnectionIds) && candidate.freeConnectionIds.length > 0) {
+    return true;
+  }
+  const provider = candidate.provider.trim().toLowerCase();
+  const model = candidate.model.trim().toLowerCase();
+  if ((provider === "opencode" || provider === "opencode-zen") && model.endsWith("-free")) {
+    return true;
+  }
+  try {
+    return classifyTier(candidate.provider, candidate.model).tier === "free";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Meta-Orc is an availability route, not a catalog export. Expanding every
+ * connected provider's complete catalog into a combo can turn eight providers
+ * into ~1,000 resolved targets and consume most of a small V8 heap before the
+ * first network attempt. Keep every currently-known free option (within a
+ * generous per-provider bound), then retain a small scored rescue sample from
+ * every provider. Provider-round-robin selection prevents one large gateway
+ * catalog from monopolizing the front of either rung.
+ */
+export function compactMetaOrcEffectivePool(
+  candidates: readonly VirtualAutoComboCandidate[],
+  scores: ReadonlyMap<string, number>,
+  limits: MetaOrcPoolLimits = {}
+): VirtualAutoComboCandidate[] {
+  const maxFreePerProvider = boundedPositiveInt(
+    limits.maxFreePerProvider ?? process.env.OMNIROUTE_META_ORC_MAX_FREE_PER_PROVIDER,
+    8,
+    32
+  );
+  const maxRescuePerProvider = boundedPositiveInt(
+    limits.maxRescuePerProvider ?? process.env.OMNIROUTE_META_ORC_MAX_RESCUE_PER_PROVIDER,
+    2,
+    16
+  );
+  const maxTotal = boundedPositiveInt(
+    limits.maxTotal ?? process.env.OMNIROUTE_META_ORC_MAX_MODELS,
+    64,
+    256
+  );
+
+  type Bucket = { free: VirtualAutoComboCandidate[]; rescue: VirtualAutoComboCandidate[] };
+  const providerOrder: string[] = [];
+  const buckets = new Map<string, Bucket>();
+  const originalIndex = new Map<VirtualAutoComboCandidate, number>();
+
+  candidates.forEach((candidate, index) => {
+    originalIndex.set(candidate, index);
+    let bucket = buckets.get(candidate.provider);
+    if (!bucket) {
+      bucket = { free: [], rescue: [] };
+      buckets.set(candidate.provider, bucket);
+      providerOrder.push(candidate.provider);
+    }
+    (isMetaOrcFreeCandidate(candidate) ? bucket.free : bucket.rescue).push(candidate);
+  });
+
+  const byScore = (a: VirtualAutoComboCandidate, b: VirtualAutoComboCandidate) =>
+    (scores.get(b.modelStr) ?? 0) - (scores.get(a.modelStr) ?? 0) ||
+    (originalIndex.get(a) ?? 0) - (originalIndex.get(b) ?? 0);
+  for (const bucket of buckets.values()) {
+    bucket.free.sort(byScore);
+    bucket.rescue.sort(byScore);
+  }
+
+  const roundRobin = (kind: keyof Bucket, perProvider: number): VirtualAutoComboCandidate[] => {
+    const selected: VirtualAutoComboCandidate[] = [];
+    for (let round = 0; round < perProvider; round++) {
+      for (const provider of providerOrder) {
+        const candidate = buckets.get(provider)?.[kind][round];
+        if (candidate) selected.push(candidate);
+      }
+    }
+    return selected;
+  };
+
+  const free = roundRobin("free", maxFreePerProvider);
+  const rescue = roundRobin("rescue", maxRescuePerProvider);
+  return [...free, ...rescue].slice(0, maxTotal);
+}
+
 function clonePreparedCandidates(
   candidates: readonly VirtualAutoComboCandidate[]
 ): VirtualAutoComboCandidate[] {
@@ -1112,8 +1211,17 @@ export async function createVirtualAutoComboFromPrepared(
     }
   }
 
+  let snapshotScores = computeSnapshotWeights(effectivePool, weights);
+  if (autoChannel === "auto/meta-orc") {
+    const beforeCount = effectivePool.length;
+    effectivePool = compactMetaOrcEffectivePool(effectivePool, snapshotScores);
+    snapshotScores = computeSnapshotWeights(effectivePool, weights);
+    log.info(
+      "AUTO",
+      `Meta-Orc bounded model pool: ${beforeCount} -> ${effectivePool.length} models across ${new Set(effectivePool.map((candidate) => candidate.provider)).size} providers`
+    );
+  }
   const providerPool = [...new Set(effectivePool.map((c) => c.provider))];
-  const snapshotScores = computeSnapshotWeights(effectivePool, weights);
   const models = effectivePool.map((candidate, index) => ({
     id: `virtual-auto-${variant || "default"}-${index + 1}-${candidate.provider}`,
     kind: "model" as const,

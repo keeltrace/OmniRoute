@@ -51,7 +51,10 @@ import {
   getQuotaScopeLabelForProvider,
   isAntigravityQuotaProvider,
 } from "@omniroute/open-sse/services/antigravityQuotaFamily.ts";
-import { rehydrateAntigravityFamilyLocksForConnections, persistAntigravityFamilyCooldownIfQuota } from "@omniroute/open-sse/services/antigravityFamilyCooldown.ts";
+import {
+  rehydrateAntigravityFamilyLocksForConnections,
+  persistAntigravityFamilyCooldownIfQuota,
+} from "@omniroute/open-sse/services/antigravityFamilyCooldown.ts";
 import { markQuotaPreflightAccountUnavailable } from "./quotaPreflightUnavailable.ts";
 import { getCreditsMode } from "@omniroute/open-sse/services/antigravityCredits.ts";
 import { preferAntigravityConnectionsWithStoredProject } from "@omniroute/open-sse/services/antigravityProjectPersistence.ts";
@@ -74,6 +77,7 @@ import {
 import { isLocalProvider } from "@omniroute/open-sse/config/providerRegistry.ts";
 import { COOLDOWN_MS, RateLimitReason } from "@omniroute/open-sse/config/constants.ts";
 import { sanitizeErrorMessage } from "@omniroute/open-sse/utils/errorSanitization.ts";
+import { classifyMetaOrc403 } from "@omniroute/open-sse/services/metaOrc403.ts";
 import {
   honorsRuleLockScope,
   isEgressBucketedLockScope,
@@ -2405,7 +2409,7 @@ export function isAgentrouterConnectionQuotaScope(
 }
 
 async function resolveDailyResetForProvider(
-  provider: string | null,
+  provider: string | null
 ): Promise<{ timezone?: unknown; hour?: unknown } | null> {
   if (!provider) return null;
   try {
@@ -2523,6 +2527,8 @@ export async function markAccountUnavailable(
     persistUnavailableState?: boolean;
     /** Caller is the combo engine — it records its own model-level lockouts. */
     isCombo?: boolean;
+    /** Meta-Orc treats ambiguous 403s as model-scoped rather than credential-wide. */
+    metaOrc403?: boolean;
     headers?: Headers | Record<string, string> | null;
   } = {}
 ) {
@@ -2643,7 +2649,7 @@ export async function markAccountUnavailable(
       effectiveProviderProfile,
       null,
       null,
-      await resolveDailyResetForProvider(provider),
+      await resolveDailyResetForProvider(provider)
     );
 
     // T-PROBE: probe-origin failures (model test-all) must never remove the
@@ -2897,7 +2903,13 @@ export async function markAccountUnavailable(
         "AUTH",
         `Model-only lockout for ${provider}:${model} — ${status} ${reason} ${Math.ceil(lockout.cooldownMs / 1000)}s (failureCount=${lockout.failureCount}, connection stays active)`
       );
-      persistAntigravityFamilyCooldownIfQuota({ provider, connectionId, model, cooldownMs: lockout.cooldownMs, reason });
+      persistAntigravityFamilyCooldownIfQuota({
+        provider,
+        connectionId,
+        model,
+        cooldownMs: lockout.cooldownMs,
+        reason,
+      });
       return { shouldFallback: true, cooldownMs: lockout.cooldownMs };
     }
     const result = fallbackResult;
@@ -2948,6 +2960,52 @@ export async function markAccountUnavailable(
         );
         return { shouldFallback: true, cooldownMs: 0 };
       }
+    }
+
+    const metaOrc403Scope =
+      options.metaOrc403 === true ? classifyMetaOrc403(status, errorText) : null;
+    if (metaOrc403Scope === "model" && provider && model) {
+      const lockout = recordModelLockoutFailure(
+        provider,
+        connectionId,
+        model,
+        "forbidden",
+        status,
+        fallbackResult.baseCooldownMs ??
+          effectiveProviderProfile?.baseCooldownMs ??
+          COOLDOWN_MS.serviceUnavailable,
+        effectiveProviderProfile,
+        { ...modelLockoutOptions, maxCooldownMs: mlSettings.maxCooldownMs }
+      );
+      updateProviderConnection(connectionId, {
+        lastErrorType: "forbidden",
+        lastError: `Model ${model} forbidden during Meta-Orc fallback`,
+        lastErrorAt: new Date().toISOString(),
+        errorCode: status,
+      }).catch(() => {});
+      log.info(
+        "AUTH",
+        `Meta-Orc model-only 403 for ${provider}:${model} — connection stays active (${Math.ceil(lockout.cooldownMs / 1000)}s)`
+      );
+      return { shouldFallback: true, cooldownMs: lockout.cooldownMs };
+    }
+    if (metaOrc403Scope === "transport") {
+      const cooldownMs = Math.min(
+        Math.max(fallbackResult.cooldownMs || COOLDOWN_MS.serviceUnavailable, 1_000),
+        15_000
+      );
+      updateProviderConnection(connectionId, {
+        rateLimitedUntil: getUnavailableUntil(cooldownMs),
+        lastErrorType: "transport",
+        lastError: `Meta-Orc transport/fingerprint rejection (${status})`,
+        lastErrorAt: new Date().toISOString(),
+        errorCode: status,
+      }).catch(() => {});
+      log.info(
+        "AUTH",
+        `Meta-Orc transport 403 for ${provider || "unknown"} connection ${connectionId.slice(0, 8)} — short cooldown ${Math.ceil(cooldownMs / 1000)}s, credential remains active`
+      );
+      return { shouldFallback: true, cooldownMs };
     }
 
     if (provider && resolveProviderId(provider) === "grok-web" && status === 403 && model) {

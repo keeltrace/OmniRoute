@@ -2278,6 +2278,7 @@ async function handleComboChatInner({
             tag: "COMBO",
             exhaustedLogLevel: "info",
             structuredError,
+            metaOrc403: combo.name === "auto/meta-orc",
           });
           // #6692: this connection was just classified as provider/connection-level
           // exhausted — if it's the currently sticky-bound one, release the pin now
@@ -3840,6 +3841,7 @@ async function handleRoundRobinCombo({
             tag: "COMBO-RR",
             exhaustedLogLevel: "debug",
             structuredError,
+            metaOrc403: combo.name === "auto/meta-orc",
           });
           // #6692: mirrors handleComboChat's exhaustion-point release above.
           releaseStickyPinOnFailure(

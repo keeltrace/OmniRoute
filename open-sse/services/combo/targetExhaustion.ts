@@ -31,6 +31,7 @@ import {
   isRequestScopedUpstreamFailure,
 } from "./comboPredicates.ts";
 import { isCloudflareFingerprintRejection } from "../errorClassifier.ts";
+import { classifyMetaOrc403 } from "../metaOrc403.ts";
 // #10334 — agentrouter-exclusive predicate shared with the persistence layer
 // (markAccountUnavailable) so the same-request combo skip and the persisted
 // connection cooldown agree on exactly which fallbackResult shapes qualify.
@@ -105,6 +106,8 @@ export type ApplyComboTargetExhaustionOptions = {
   exhaustedLogLevel: "info" | "debug";
   /** Structured error object from upstream response — preferred over raw errorText for classification */
   structuredError?: { code?: string; type?: string; message?: string };
+  /** Meta-Orc keeps ambiguous/model-scoped 403s from poisoning the provider. */
+  metaOrc403?: boolean;
 };
 
 /**
@@ -197,6 +200,30 @@ export function applyComboTargetExhaustion(
       .join(" ")
   );
   const quotaMisclassifiedAsAuth = isQuotaOrCreditsError(errorText, structuredError);
+  const metaOrc403Scope =
+    opts.metaOrc403 === true ? classifyMetaOrc403(result.status, errorText, structuredError) : null;
+
+  if (metaOrc403Scope === "model") {
+    log.info(
+      tag,
+      `Meta-Orc model-scoped 403 for ${provider || "unknown"}/${opts.rawModel} — keeping sibling models eligible`
+    );
+    return false;
+  }
+
+  if (metaOrc403Scope === "transport") {
+    const connId = target.connectionId ?? undefined;
+    if (provider && provider !== "unknown") {
+      if (connId) sets.exhaustedConnections.add(`${provider}:${connId}`);
+      else sets.exhaustedProviders.add(provider);
+      log.info(
+        tag,
+        `Meta-Orc transport/fingerprint 403 for ${provider}${connId ? ` connection ${connId}` : ""} — skipping this route for the rest of the request`
+      );
+    }
+    return false;
+  }
+
   if (
     AUTH_LEVEL_ERROR_STATUSES.includes(result.status) &&
     // Cloudflare 1010 is a 403-ONLY fingerprint rejection. A 401 that merely happens to
@@ -204,6 +231,7 @@ export function applyComboTargetExhaustion(
     // auth-level exhaustion — only a 403 carrying the Cloudflare fingerprint signal does.
     !(result.status === 403 && (fingerprintToken || fingerprintText)) &&
     !quotaMisclassifiedAsAuth &&
+    metaOrc403Scope !== "quota" &&
     provider &&
     provider !== "unknown"
   ) {
@@ -421,7 +449,8 @@ function markConnectionLevelExhaustion(
   // poison the connection (and hide sibling models such as big-pickle).
   if (
     result.status === 502 &&
-    (isModelScoped400(errorText) || /model\s+(?:is\s+)?(?:unavailable|not found|unsupported)/i.test(errorText))
+    (isModelScoped400(errorText) ||
+      /model\s+(?:is\s+)?(?:unavailable|not found|unsupported)/i.test(errorText))
   ) {
     return;
   }
