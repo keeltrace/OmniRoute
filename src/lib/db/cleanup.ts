@@ -765,7 +765,7 @@ let _cleanupSchedulerTimer: ReturnType<typeof setInterval> | null = null;
 
 /**
  * Start the background cleanup scheduler. Runs cleanup on startup
- * and then every 6 hours. Runs VACUUM after deletes to reclaim disk space.
+ * and then every 6 hours. Full VACUUM is owned by vacuumScheduler and follows Storage settings.
  *
  * Without this, tables grow unboundedly (compression_analytics 600K+ rows,
  * usage_history 250K+ rows) causing 1.4GB+ SQLite files and 3-8GB RSS
@@ -781,14 +781,7 @@ export function startCleanupScheduler(): void {
       const proxyResult = await cleanupProxyLogs();
       const totalDeleted = result.totalDeleted + proxyResult.deleted;
       if (totalDeleted > 0) {
-        console.log(`[Cleanup] Startup cleanup freed ${totalDeleted} rows. Running VACUUM...`);
-        try {
-          const db = getDbInstance();
-          db.exec("VACUUM");
-          console.log("[Cleanup] VACUUM completed after startup cleanup.");
-        } catch (vacErr) {
-          console.error("[Cleanup] VACUUM after cleanup failed:", vacErr);
-        }
+        console.log(`[Cleanup] Startup cleanup freed ${totalDeleted} rows.`);
       }
     } catch (err) {
       console.error("[Cleanup] Startup cleanup failed:", err);
@@ -802,14 +795,7 @@ export function startCleanupScheduler(): void {
       const proxyResult = await cleanupProxyLogs();
       const totalDeleted = result.totalDeleted + proxyResult.deleted;
       if (totalDeleted > 0) {
-        console.log(`[Cleanup] Periodic cleanup freed ${totalDeleted} rows. Running VACUUM...`);
-        try {
-          const db = getDbInstance();
-          db.exec("VACUUM");
-          console.log("[Cleanup] VACUUM completed after periodic cleanup.");
-        } catch (vacErr) {
-          console.error("[Cleanup] VACUUM after cleanup failed:", vacErr);
-        }
+        console.log(`[Cleanup] Periodic cleanup freed ${totalDeleted} rows.`);
       }
     } catch (err) {
       console.error("[Cleanup] Periodic cleanup failed:", err);
