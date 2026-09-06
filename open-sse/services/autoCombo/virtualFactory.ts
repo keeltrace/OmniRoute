@@ -1015,6 +1015,30 @@ export function compactMetaOrcEffectivePool(
   return [...free, ...rescue].slice(0, maxTotal);
 }
 
+export interface MetaOrcFailoverConfig {
+  targetTimeoutMs: number;
+  maxRetries: 0;
+  retryDelayMs: 0;
+  fallbackDelayMs: 0;
+}
+
+/**
+ * Meta-Orc optimizes for continuity, not patience with a single upstream.
+ * A slow/throttled free target must yield quickly so another free provider,
+ * then the paid rescue tail, can run before the outer client gives up.
+ */
+export function resolveMetaOrcFailoverConfig(
+  env: Record<string, string | undefined> = process.env
+): MetaOrcFailoverConfig {
+  const configured = boundedPositiveInt(env.OMNIROUTE_META_ORC_TARGET_TIMEOUT_MS, 12_000, 60_000);
+  return {
+    targetTimeoutMs: Math.max(3_000, configured),
+    maxRetries: 0,
+    retryDelayMs: 0,
+    fallbackDelayMs: 0,
+  };
+}
+
 function clonePreparedCandidates(
   candidates: readonly VirtualAutoComboCandidate[]
 ): VirtualAutoComboCandidate[] {
@@ -1291,6 +1315,7 @@ export async function createVirtualAutoComboFromPrepared(
     // the broadcast mode and stream each panel model back to IDEs that opt in.
     config: {
       auto: autoConfig,
+      ...(autoChannel === "auto/meta-orc" ? resolveMetaOrcFailoverConfig() : {}),
       ...(isChaos
         ? {
             chaos: {

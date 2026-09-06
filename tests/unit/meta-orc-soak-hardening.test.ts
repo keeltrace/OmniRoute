@@ -7,6 +7,7 @@ import {
 } from "../../open-sse/services/metaOrc403.ts";
 import {
   compactMetaOrcEffectivePool,
+  resolveMetaOrcFailoverConfig,
   type VirtualAutoComboCandidate,
 } from "../../open-sse/services/autoCombo/virtualFactory.ts";
 import {
@@ -73,6 +74,24 @@ test("Meta-Orc refreshes 401 but never burns refresh attempts on an ambiguous 40
   assert.equal(shouldAttemptCredentialRefresh(403, "auto/meta-orc"), false);
   assert.equal(shouldAttemptCredentialRefresh(403, "some-other-combo"), true);
   assert.equal(shouldAttemptCredentialRefresh(500, "auto/meta-orc"), false);
+});
+
+test("Meta-Orc fails over quickly instead of retrying the same stalled target", () => {
+  assert.deepEqual(resolveMetaOrcFailoverConfig({}), {
+    targetTimeoutMs: 12_000,
+    maxRetries: 0,
+    retryDelayMs: 0,
+    fallbackDelayMs: 0,
+  });
+  assert.equal(
+    resolveMetaOrcFailoverConfig({ OMNIROUTE_META_ORC_TARGET_TIMEOUT_MS: "500" }).targetTimeoutMs,
+    3_000
+  );
+  assert.equal(
+    resolveMetaOrcFailoverConfig({ OMNIROUTE_META_ORC_TARGET_TIMEOUT_MS: "120000" })
+      .targetTimeoutMs,
+    60_000
+  );
 });
 
 test("Meta-Orc bounds the model deck while preserving free-first provider diversity and rescue", () => {
